@@ -109,7 +109,7 @@ export const BenchmarkModal: React.FC<Props> = ({ isOpen, onClose }) => {
                   {result.p3_win_or_tie_rate_pct.toFixed(1)}%
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--accent-emerald)' }}>
-                  {result.p3_outperform_count} Wins, {result.tie_count} Ties, 0 Losses
+                  {result.p3_outperform_count} Wins, {result.tie_count} Ties, {result.p3_worsened_count} Losses
                 </div>
               </div>
 
@@ -129,15 +129,15 @@ export const BenchmarkModal: React.FC<Props> = ({ isOpen, onClose }) => {
                   {result.mean_downstream_delay_savings_min.toFixed(0)} min
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                  Per disruption incident
+                  Valid Seeds: {result.valid_paired_seeds} / {result.total_seeds}
                 </div>
               </div>
             </div>
 
             <div style={{ background: '#0a0f1d', padding: '12px', borderRadius: '6px', fontSize: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Total Seeds Solved:</span>
-                <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{result.total_seeds} paired instances</span>
+                <span style={{ color: 'var(--text-muted)' }}>Total Seeds Tested:</span>
+                <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{result.total_seeds} paired instances (Master seed: {result.master_seed})</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Total Wall-Clock Time:</span>
@@ -149,12 +149,22 @@ export const BenchmarkModal: React.FC<Props> = ({ isOpen, onClose }) => {
                   P3: {result.mean_p3_solve_time_ms.toFixed(1)} ms | A2: {result.mean_a2_solve_time_ms.toFixed(1)} ms
                 </span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Solver Statuses:</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                <span style={{ color: 'var(--text-muted)' }}>P3 Solver Statuses:</span>
                 <span style={{ fontWeight: '600', color: 'var(--badge-optimal-text)' }}>
-                  {Object.entries(result.status_distribution).map(([k, v]) => `${k}: ${v}`).join(', ')}
+                  {result.p3_status_distribution ? Object.entries(result.p3_status_distribution).map(([k, v]) => `${k}: ${v}`).join(', ') : 'N/A'}
                 </span>
               </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--text-muted)' }}>A2 Solver Statuses:</span>
+                <span style={{ fontWeight: '600', color: '#93c5fd' }}>
+                  {result.a2_status_distribution ? Object.entries(result.a2_status_distribution).map(([k, v]) => `${k}: ${v}`).join(', ') : 'N/A'}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+              <strong>Scope notice:</strong> P3 option set includes candidates available to A2; win-rate compares joint optimisation against fixed-source sequential baseline A2 under synthetic operational jitter, not against all human manager decisions in real dealership operations.
             </div>
           </div>
         )}

@@ -117,6 +117,8 @@ class Proposal(BaseModel):
     
     # Solver execution metrics
     solver_status: SolverStatusEnum
+    pass1_status: Optional[SolverStatusEnum] = None
+    pass2_status: Optional[SolverStatusEnum] = None
     best_bound: Optional[float] = None
     solve_time_ms: float
     
@@ -168,3 +170,51 @@ class AuditEvent(BaseModel):
     version_before: int
     version_after: int
     details: Dict[str, Any] = {}
+
+
+class SolveResponse(BaseModel):
+    comparison: Optional[PolicyComparisonResult] = None
+    active_proposal: Proposal
+    snapshot: ScenarioSnapshot
+
+
+class BenchmarkRecord(BaseModel):
+    seed_id: str
+    a2_status: str
+    p3_status: str
+    a2_pass1_status: Optional[str] = None
+    a2_pass2_status: Optional[str] = None
+    p3_pass1_status: Optional[str] = None
+    p3_pass2_status: Optional[str] = None
+    a2_weighted_lateness: float
+    p3_weighted_lateness: float
+    a2_freight_cost: float
+    p3_freight_cost: float
+    relocation_selected: bool
+    p3_outcome: str  # IMPROVED, TIED, WORSENED
+    delay_savings_min: int
+    p3_solve_time_ms: float
+    a2_solve_time_ms: float
+
+
+class BenchmarkResult(BaseModel):
+    benchmark_id: str
+    total_seeds: int
+    valid_paired_seeds: int
+    master_seed: int
+    total_wall_clock_seconds: float
+    mean_p3_solve_time_ms: float
+    mean_a2_solve_time_ms: float
+    mean_a2_weighted_lateness: float
+    mean_p3_weighted_lateness: float
+    mean_downstream_delay_savings_min: float
+    mean_weighted_lateness_reduction_pct: float
+    p3_outperform_count: int
+    tie_count: int
+    p3_worsened_count: int
+    p3_win_or_tie_rate_pct: float
+    a2_status_distribution: Dict[str, int]
+    p3_status_distribution: Dict[str, int]
+    artifact_path: Optional[str] = None
+    records: List[BenchmarkRecord] = []
+

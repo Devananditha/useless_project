@@ -13,7 +13,8 @@ from backend.models import (
     ScenarioSnapshot,
     Proposal,
     PolicyComparisonResult,
-    PolicyId
+    PolicyId,
+    SolveResponse
 )
 from backend.state_store import store
 from backend.solver import solve_recovery_problem
@@ -83,14 +84,34 @@ def list_scenarios() -> Dict[str, Any]:
 
 @app.get("/api/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str) -> ScenarioSnapshot:
+    """
+    Read-only retrieval of a scenario snapshot.
+    Does NOT increment version, reset state, or alter active proposal.
+    """
     try:
-        return store.select_scenario(scenario_id)
+        return store.get_scenario(scenario_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/api/solve")
-def solve_scenario(request: SolveRequest) -> Dict[str, Any]:
+@app.post("/api/scenarios/{scenario_id}/select")
+def select_scenario(scenario_id: str) -> Dict[str, Any]:
+    """
+    Explicit action to switch the active scenario in the state store.
+    """
+    try:
+        snap = store.select_scenario(scenario_id)
+        return {
+            "status": "SCENARIO_SELECTED",
+            "active_scenario_id": store.current_scenario_id,
+            "snapshot": snap
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/solve", response_model=SolveResponse)
+def solve_scenario(request: SolveRequest) -> SolveResponse:
     """
     Executes actual Google OR-Tools CP-SAT solver against active scenario snapshot.
     If compare_a2_p3 is True, executes real solver for BOTH A2 and P3 and returns comparative data.
@@ -103,31 +124,32 @@ def solve_scenario(request: SolveRequest) -> Dict[str, Any]:
         comparison: PolicyComparisonResult = run_policy_comparison(snapshot)
         store.save_proposal(comparison.baseline_a2)
         store.save_proposal(comparison.joint_p3)
-        return {
-            "comparison": comparison,
-            "active_proposal": comparison.joint_p3,
-            "snapshot": snapshot
-        }
+        return SolveResponse(
+            comparison=comparison,
+            active_proposal=comparison.joint_p3,
+            snapshot=snapshot
+        )
     else:
         proposal: Proposal = solve_recovery_problem(snapshot, request.policy_id)
         store.save_proposal(proposal)
-        return {
-            "active_proposal": proposal,
-            "snapshot": snapshot
-        }
+        return SolveResponse(
+            comparison=None,
+            active_proposal=proposal,
+            snapshot=snapshot
+        )
 
 
 @app.post("/api/scenarios/{scenario_id}/events/competing-reservation")
-def trigger_competing_reservation(scenario_id: str) -> Dict[str, Any]:
+def trigger_competing_reservation(scenario_id: str, source_id: str = "S1") -> Dict[str, Any]:
     """
-    Simulates external stock race: competing reservation consumes S1, advancing version (v14 -> v15).
+    Simulates external stock race: competing reservation consumes source (default S1), advancing version (e.g. v14 -> v15).
     """
     if scenario_id != store.current_scenario_id:
         store.select_scenario(scenario_id)
-    updated_snap = store.trigger_competing_reservation(source_id="S1")
+    updated_snap = store.trigger_competing_reservation(source_id=source_id)
     return {
         "status": "COMPETING_RESERVATION_SIMULATED",
-        "affected_source": "S1",
+        "affected_source": source_id,
         "new_atp": 0,
         "new_snapshot_version": updated_snap.snapshot_version,
         "snapshot": updated_snap

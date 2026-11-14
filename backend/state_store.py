@@ -61,25 +61,29 @@ class StateStore:
     def get_active_snapshot(self) -> ScenarioSnapshot:
         return self.active_snapshot
 
+    def get_scenario(self, scenario_id: str) -> ScenarioSnapshot:
+        """
+        Strictly read-only retrieval of scenario snapshot.
+        Must NOT change version, reset data, or emit side effects.
+        """
+        if scenario_id not in self.snapshots:
+            raise ValueError(f"Unknown scenario ID: {scenario_id}")
+        return self.snapshots[scenario_id]
+
     def select_scenario(self, scenario_id: str) -> ScenarioSnapshot:
+        """
+        Explicitly selects/switches the active scenario.
+        """
         if scenario_id not in self.snapshots:
             raise ValueError(f"Unknown scenario ID: {scenario_id}")
         
         v_before = self.version
-        self.version += 1
         self.current_scenario_id = scenario_id
-        
-        if scenario_id == "S-MATH-01":
-            snap = get_canonical_s_math_01_fixture(version=self.version)
-        else:
-            snap = get_rollable_s_math_01_fixture(version=self.version)
-            
-        self.snapshots[scenario_id] = snap
-        self.active_snapshot = snap
+        self.active_snapshot = self.snapshots[scenario_id]
 
         self.log_event(
-            event_type="SCENARIO_LOADED",
-            description=f"Switched active scenario to {scenario_id}. Snapshot updated to v{self.version}.",
+            event_type="SCENARIO_SELECTED",
+            description=f"Switched active scenario to {scenario_id} at snapshot version v{self.active_snapshot.snapshot_version}.",
             version_before=v_before,
             version_after=self.version,
             details={"scenario_id": scenario_id}

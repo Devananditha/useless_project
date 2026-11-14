@@ -41,7 +41,7 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
         {/* Vehicle Physical State Progression */}
         <div style={{ background: '#0e1626', padding: '14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
           <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--accent-cyan)', marginBottom: '8px' }}>
-            RO-1042 Physical Vehicle State (BMW X5)
+            RO-1042 Physical Vehicle State (Ford Explorer)
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
             {vehicleStates.map((st, i) => {

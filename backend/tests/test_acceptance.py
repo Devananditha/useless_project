@@ -1,28 +1,49 @@
 """
-Automated Minimum Acceptance Gate Tests for StallBreaker CP-SAT MVP.
-Covers all 16 required test criteria with real OR-Tools CP-SAT execution.
-No mocked solver outputs.
+Automated Minimum Acceptance Gate & Integration Tests for StallBreaker CP-SAT MVP.
+Covers all 16 canonical criteria PLUS integration tests for API contract, read-only GETs,
+optimistic concurrency, benchmark integrity, and relocation event sequence.
+No mocked solver outputs: all runs execute genuine Google OR-Tools CP-SAT models.
 """
 
+import os
+import json
 import pytest
+
+from backend.main import (
+    solve_scenario,
+    get_scenario,
+    select_scenario,
+    trigger_competing_reservation,
+    approve_proposal,
+    SolveRequest
+)
 from backend.models import (
     PolicyId,
     VehicleState,
     BayState,
     SolverStatusEnum,
     ApprovalStatus,
-    PartSource
+    PartSource,
+    ScenarioSnapshot,
+    RepairOrder,
+    SolveResponse
 )
 from backend.fixtures import (
     get_canonical_s_math_01_fixture,
-    get_rollable_s_math_01_fixture
+    get_rollable_s_math_01_fixture,
+    tick_to_clock
 )
 from backend.solver import solve_recovery_problem
 from backend.policies import run_policy_comparison
-from backend.state_store import StateStore
+from backend.state_store import StateStore, store
 from backend.revalidation import revalidate_and_approve_proposal
 from backend.eligibility import validate_source_eligibility, validate_relocation_feasibility
+from backend.benchmark import run_benchmark
 
+
+# =========================================================================
+# Canonical Arithmetic & State Machine Gates (1-16)
+# =========================================================================
 
 def test_01_canonical_s_math_01_a2_arithmetic():
     """1. Canonical S-MATH-01 A2 fixture arithmetic."""
@@ -92,7 +113,6 @@ def test_06_unsafe_movement_rejection():
 
 def test_07_h2_capacity_reservation_before_movement():
     """7. H2 capacity reservation before movement (rejects if H2 stalls = 0)."""
-    # Create scenario where vehicle is safe to relocate, but H2 has 0 available stalls
     snap = get_rollable_s_math_01_fixture()
     snap.h2_available_stalls = 0
     can_reloc, rejections = validate_relocation_feasibility(snap)
@@ -106,7 +126,6 @@ def test_08_bay_no_overlap():
     snap = get_canonical_s_math_01_fixture()
     prop = solve_recovery_problem(snap, PolicyId.P3)
 
-    # In scheduled intervals, verify no overlap between B4 occupancy for RO-1042 and RO-1051
     b4_release = prop.b4_release_tick
     ro1051_start = [i.start_tick for i in prop.scheduled_intervals if i.entity_id == "RO-1051"][0]
     
@@ -136,7 +155,6 @@ def test_10_return_to_bay_precedence():
     assert prop.b4_release_tick == 24  # 21 + 3 relocation transit
     assert prop.ro1051_finish_tick == 48  # 24 + 24 service ticks
     assert prop.ro1051_lateness_ticks == 0
-    # Return transit happens after RO-1051 clearance (48 + 2 = 50) and after S2 ready (49)
     return_transits = [i for i in prop.scheduled_intervals if "Return Transit" in i.operation]
     assert len(return_transits) == 1
     assert return_transits[0].start_tick >= 50
@@ -179,7 +197,6 @@ def test_14_inventory_version_conflict():
 
     assert prop.input_snapshot_version == 14
 
-    # Trigger competing reservation -> advances version to 15
     test_store.trigger_competing_reservation("S1")
     assert test_store.version == 15
     assert prop.input_snapshot_version != test_store.version
@@ -187,25 +204,13 @@ def test_14_inventory_version_conflict():
 
 def test_15_stale_proposal_cannot_be_committed():
     """15. Stale proposal cannot be committed (returns STALE_SNAPSHOT)."""
-    test_store = StateStore()
-    test_store.version = 14
-    snap = test_store.get_active_snapshot()
-    prop = solve_recovery_problem(snap, PolicyId.P3)
-    test_store.save_proposal(prop)
-
-    # Advance live version
-    test_store.trigger_competing_reservation("S1")
-
-    # Attempt to approve old proposal
-    # Revalidation gate uses global store; let's simulate with the global store
-    from backend.state_store import store as global_store
-    global_store.reset_to_canonical()
-    global_store.version = 14
-    prop = solve_recovery_problem(global_store.get_active_snapshot(), PolicyId.P3)
-    global_store.save_proposal(prop)
+    store.reset_to_canonical()
+    store.version = 14
+    prop = solve_recovery_problem(store.get_active_snapshot(), PolicyId.P3)
+    store.save_proposal(prop)
     
     # Simulate competing reservation
-    global_store.trigger_competing_reservation("S1")
+    store.trigger_competing_reservation("S1")
     
     # Advisor clicks approve
     res = revalidate_and_approve_proposal(prop.proposal_id)
@@ -216,14 +221,13 @@ def test_15_stale_proposal_cannot_be_committed():
 
 def test_16_new_proposal_requires_new_human_approval():
     """16. New proposal generated after stale abort requires new human approval (not auto-committed)."""
-    from backend.state_store import store as global_store
-    global_store.reset_to_canonical()
-    global_store.version = 14
-    prop = solve_recovery_problem(global_store.get_active_snapshot(), PolicyId.P3)
-    global_store.save_proposal(prop)
+    store.reset_to_canonical()
+    store.version = 14
+    prop = solve_recovery_problem(store.get_active_snapshot(), PolicyId.P3)
+    store.save_proposal(prop)
     
     # Stock race event
-    global_store.trigger_competing_reservation("S1")
+    store.trigger_competing_reservation("S1")
     
     # Advisor clicks approve on old proposal
     res = revalidate_and_approve_proposal(prop.proposal_id)
@@ -232,4 +236,224 @@ def test_16_new_proposal_requires_new_human_approval():
     new_prop = res["new_proposal"]
     assert new_prop.approval_status == ApprovalStatus.PENDING_APPROVAL
     assert new_prop.proposal_id != prop.proposal_id
-    assert new_prop.selected_source_id == "S2"  # S1 was depleted, solver picked S2!
+    assert new_prop.selected_source_id == "S2"
+
+
+# =========================================================================
+# Integration & Defect Repair Tests (17-27)
+# =========================================================================
+
+def test_17_solve_api_response_shape():
+    """17. Solve endpoint returns exact SolveResponse model: comparison, active_proposal, snapshot."""
+    store.reset_to_canonical()
+    req = SolveRequest(scenario_id="S-MATH-01", compare_a2_p3=True)
+    res: SolveResponse = solve_scenario(req)
+
+    assert res.comparison is not None
+    assert res.active_proposal is not None
+    assert res.snapshot is not None
+
+    comp = res.comparison
+    assert comp.baseline_a2 is not None
+    assert comp.joint_p3 is not None
+    assert comp.weighted_lateness_reduction_pct == 66.7
+    assert res.active_proposal.proposal_id == comp.joint_p3.proposal_id
+    assert res.snapshot.scenario_id == "S-MATH-01"
+
+
+def test_18_scenario_get_is_read_only():
+    """18. GET scenario endpoint is strictly read-only and does not mutate version or emit side effects."""
+    store.reset_to_canonical()
+    initial_version = store.version
+
+    # First read-only retrieval
+    snap1 = get_scenario("S-MATH-01")
+    v1 = snap1.snapshot_version
+
+    # Second read-only retrieval
+    snap2 = get_scenario("S-MATH-01")
+    v2 = snap2.snapshot_version
+
+    # Verify no version mutation occurred
+    assert v1 == initial_version
+    assert v2 == initial_version
+    assert store.version == initial_version
+
+
+def test_19_repeated_get_does_not_invalidate_proposal():
+    """19. Repeated GET calls do not invalidate an existing proposal."""
+    store.reset_to_canonical()
+    solve_res = solve_scenario(SolveRequest(scenario_id="S-MATH-01", compare_a2_p3=True))
+    prop_id = solve_res.active_proposal.proposal_id
+
+    # Perform multiple read-only GET requests
+    for _ in range(5):
+        snap = get_scenario("S-MATH-01")
+        assert snap.scenario_id == "S-MATH-01"
+
+    # Attempt approval of the original proposal
+    appr_res = approve_proposal(prop_id)
+    assert appr_res["success"] is True
+    assert appr_res["status"] == "APPROVED"
+
+
+def test_20_act_3_competing_reservation_structure_and_stale_rejection():
+    """20. Act 3 competing reservation advances version and triggers stale rejection on approval."""
+    store.reset_to_canonical()
+    solve_res = solve_scenario(SolveRequest(scenario_id="S-MATH-01", compare_a2_p3=True))
+    prop_id = solve_res.active_proposal.proposal_id
+    v_orig = solve_res.snapshot.snapshot_version
+
+    # Trigger stock race via endpoint handler
+    race_res = trigger_competing_reservation("S-MATH-01", "S1")
+
+    assert race_res["status"] == "COMPETING_RESERVATION_SIMULATED"
+    assert race_res["affected_source"] == "S1"
+    assert race_res["new_atp"] == 0
+    assert race_res["new_snapshot_version"] == v_orig + 1
+    assert "snapshot" in race_res
+
+    # Attempt to approve old proposal
+    appr_res = approve_proposal(prop_id)
+
+    assert appr_res["success"] is False
+    assert appr_res["status"] == "STALE_SNAPSHOT"
+    assert appr_res["requires_human_approval"] is True
+    assert appr_res["old_proposal"].proposal_id == prop_id
+    assert appr_res["new_proposal"].selected_source_id == "S2"
+    assert appr_res["new_proposal"].approval_status == ApprovalStatus.PENDING_APPROVAL
+
+
+def test_21_replacement_proposal_requires_explicit_human_approval():
+    """21. Replacement proposal can be explicitly authorized by advisor in subsequent call."""
+    store.reset_to_canonical()
+    solve_res = solve_scenario(SolveRequest(scenario_id="S-MATH-01", compare_a2_p3=True))
+    old_id = solve_res.active_proposal.proposal_id
+
+    trigger_competing_reservation("S-MATH-01", "S1")
+    stale_appr = approve_proposal(old_id)
+    new_prop_id = stale_appr["new_proposal"].proposal_id
+
+    # Second approval explicitly targets new proposal
+    commit_res = approve_proposal(new_prop_id)
+
+    assert commit_res["success"] is True
+    assert commit_res["status"] == "APPROVED"
+    assert commit_res["proposal"].proposal_id == new_prop_id
+    assert "Simulation only" in commit_res["message"]
+
+
+def test_22_a2_and_p3_solver_statuses_and_lexicographic_passes():
+    """22. Verify actual solver statuses and lexicographic multi-pass tracking."""
+    snap = get_canonical_s_math_01_fixture()
+    prop_p3 = solve_recovery_problem(snap, PolicyId.P3)
+
+    assert prop_p3.pass1_status == SolverStatusEnum.OPTIMAL
+    assert prop_p3.pass2_status == SolverStatusEnum.OPTIMAL
+    assert prop_p3.solver_status == SolverStatusEnum.OPTIMAL
+
+    prop_a2 = solve_recovery_problem(snap, PolicyId.A2)
+    assert prop_a2.pass1_status == SolverStatusEnum.OPTIMAL
+    assert prop_a2.pass2_status == SolverStatusEnum.OPTIMAL
+    assert prop_a2.solver_status == SolverStatusEnum.OPTIMAL
+
+
+def test_23_benchmark_status_counts_derived_from_actual_outputs():
+    """23. Benchmark status counts are genuinely derived and written to artifact."""
+    bench = run_benchmark(n=10, master_seed=42)
+
+    assert bench["total_seeds"] == 10
+    assert bench["valid_paired_seeds"] == 10
+    assert "a2_status_distribution" in bench
+    assert "p3_status_distribution" in bench
+    assert sum(bench["a2_status_distribution"].values()) == 10
+    assert sum(bench["p3_status_distribution"].values()) == 10
+    assert bench["artifact_path"] is not None
+    assert os.path.exists(bench["artifact_path"])
+
+    with open(bench["artifact_path"], "r") as f:
+        saved = json.load(f)
+    assert saved["benchmark_id"] == bench["benchmark_id"]
+    assert len(saved["records"]) == 10
+
+
+def test_24_infeasible_runs_do_not_contaminate_lateness_averages():
+    """24. Infeasible runs (sentinel lateness >= 900) are excluded from average calculation."""
+    bench = run_benchmark(n=5, master_seed=42)
+    # Average lateness must be reasonable (< 200 ticks), not contaminated by 999 sentinel
+    assert bench["mean_p3_weighted_lateness"] < 200.0
+    assert bench["mean_a2_weighted_lateness"] < 200.0
+
+
+def test_25_ineligible_inventory_cannot_be_selected_by_solver():
+    """25. Ineligible inventory cannot be selected by the solver."""
+    snap = get_canonical_s_math_01_fixture()
+    # Invalidate both sources
+    snap.sources[0].fitment_verified = False  # S1 invalid fitment
+    snap.sources[1].atp = 0                   # S2 zero stock
+
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.solver_status == SolverStatusEnum.INFEASIBLE
+    assert prop.selected_source_id is None
+    assert prop.weighted_lateness_ticks >= 900.0
+
+
+def test_26_act_2_relocation_timeline_full_sequence():
+    """26. Act 2 relocation schedule contains all 7 chronological intervals including clearance and return transit."""
+    snap = get_rollable_s_math_01_fixture()
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    ops = [i.operation for i in prop.scheduled_intervals]
+
+    assert any("Transit from Bay B4 to Holding H2" in op for op in ops)
+    assert any("Fleet ADAS Calibration" in op for op in ops)
+    assert any("Post-Service Clearance Transit" in op for op in ops)
+    assert any("Staged in Holding H2" in op for op in ops)
+    assert any("Return Transit from H2 to Bay B4" in op for op in ops)
+    assert any("Part Installation" in op for op in ops)
+    assert any("Final Verification & Bay Clearance" in op for op in ops)
+
+    # Chronological timestamps
+    # RO-1051 ADAS Calibration finishes at t=48 (12:00)
+    adas_int = [i for i in prop.scheduled_intervals if "Fleet ADAS Calibration" in i.operation][0]
+    assert adas_int.start_tick == 24
+    assert adas_int.end_tick == 48
+
+    # Bay clearance completes at t=50 (12:10)
+    b4_clear = [i for i in prop.scheduled_intervals if "Post-Service Clearance Transit" in i.operation][0]
+    assert b4_clear.start_tick == 48
+    assert b4_clear.end_tick == 50
+
+    # RO-1042 return transit: t=50 to 53 (12:10 to 12:25)
+    ret_trans = [i for i in prop.scheduled_intervals if "Return Transit" in i.operation][0]
+    assert ret_trans.start_tick == 50
+    assert ret_trans.end_tick == 53
+
+    # Installation on B4: t=53 to 65 (12:25 to 13:25)
+    install_int = [i for i in prop.scheduled_intervals if "Part Installation" in i.operation][0]
+    assert install_int.start_tick == 53
+    assert install_int.end_tick == 65
+
+    # Final clearance: t=65 to 67 (13:25 to 13:35)
+    final_clear = [i for i in prop.scheduled_intervals if "Final Verification & Bay Clearance" in i.operation][0]
+    assert final_clear.start_tick == 65
+    assert final_clear.end_tick == 67
+
+
+def test_27_canonical_fixture_promise_times_and_models():
+    """27. Canonical fixture vehicle models, promises, and usable times match specification."""
+    snap = get_canonical_s_math_01_fixture()
+
+    assert snap.ro1042.vehicle_model == "Ford Explorer"
+    assert snap.ro1042.promise_ticks == 66  # 13:30
+    assert snap.ro1051.vehicle_model == "Ford F-150 Commercial"
+    assert snap.ro1051.promise_ticks == 54  # 12:30
+
+    s1 = [s for s in snap.sources if s.source_id == "S1"][0]
+    s2 = [s for s in snap.sources if s.source_id == "S2"][0]
+
+    assert s1.usable_time_ticks == 27  # 10:15 AM
+    assert s1.cost == 55.0
+    assert s2.usable_time_ticks == 49  # 12:05 PM
+    assert s2.cost == 18.0

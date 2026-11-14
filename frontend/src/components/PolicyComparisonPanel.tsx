@@ -120,7 +120,7 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
             <span style={{ fontWeight: '600', color: 'var(--accent-rose)' }}>{baseline_a2.ro1051_finish_clock}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
-            <span style={{ color: 'var(--text-muted)' }}>RO-1051 Lateness (Promise: 11:30)</span>
+            <span style={{ color: 'var(--text-muted)' }}>RO-1051 Lateness (Promise: 12:30)</span>
             <span style={{ fontWeight: '600', color: 'var(--accent-rose)' }}>
               {baseline_a2.ro1051_lateness_ticks * 5} min ({baseline_a2.ro1051_lateness_ticks} ticks)
             </span>
@@ -164,7 +164,7 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
             <span style={{ fontWeight: '700', color: 'var(--accent-emerald)' }}>{joint_p3.ro1051_finish_clock}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
-            <span style={{ color: 'var(--text-muted)' }}>RO-1051 Lateness (Promise: 11:30)</span>
+            <span style={{ color: 'var(--text-muted)' }}>RO-1051 Lateness (Promise: 12:30)</span>
             <span style={{ fontWeight: '700', color: 'var(--accent-emerald)' }}>
               {joint_p3.ro1051_lateness_ticks * 5} min ({joint_p3.ro1051_lateness_ticks} ticks)
             </span>
@@ -192,6 +192,11 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
             ))}
           </ul>
         </div>
+      </div>
+
+      {/* Policy Scope & Comparison Disclaimer */}
+      <div style={{ gridColumn: '1 / -1', padding: '10px 14px', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '11px', color: 'var(--text-muted)' }}>
+        <strong>Implementation Boundary:</strong> Only A2 (study-defined fixed-source baseline) and P3 (joint sourcing and scheduling policy) are implemented as active comparison policies. P0 (unrecovered stall) and P1 (manager heuristic) are not implemented as competing policies in this prototype.
       </div>
     </div>
   );

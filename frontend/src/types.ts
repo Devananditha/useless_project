@@ -79,6 +79,8 @@ export interface Proposal {
   downstream_delay_minutes: number;
   parts_freight_cost: number;
   solver_status: SolverStatus;
+  pass1_status?: SolverStatus | null;
+  pass2_status?: SolverStatus | null;
   best_bound: number | null;
   solve_time_ms: number;
   feasibility_explanations: string[];
@@ -126,9 +128,55 @@ export interface AuditEvent {
   details: Record<string, any>;
 }
 
+export interface SolveResponse {
+  comparison?: PolicyComparisonResult | null;
+  active_proposal: Proposal;
+  snapshot: ScenarioSnapshot;
+}
+
+export interface CompetingReservationResponse {
+  status: string;
+  affected_source: string;
+  new_atp: number;
+  new_snapshot_version: number;
+  snapshot: ScenarioSnapshot;
+}
+
+export interface ApprovalResponse {
+  success: boolean;
+  status: string;
+  message: string;
+  proposal?: Proposal;
+  old_proposal?: Proposal;
+  new_proposal?: Proposal;
+  new_comparison?: PolicyComparisonResult;
+  requires_human_approval: boolean;
+  current_snapshot?: ScenarioSnapshot;
+}
+
+export interface BenchmarkRecord {
+  seed_id: string;
+  a2_status: string;
+  p3_status: string;
+  a2_pass1_status?: string | null;
+  a2_pass2_status?: string | null;
+  p3_pass1_status?: string | null;
+  p3_pass2_status?: string | null;
+  a2_weighted_lateness: number;
+  p3_weighted_lateness: number;
+  a2_freight_cost: number;
+  p3_freight_cost: number;
+  relocation_selected: boolean;
+  p3_outcome: string;
+  delay_savings_min: number;
+  p3_solve_time_ms: number;
+  a2_solve_time_ms: number;
+}
+
 export interface BenchmarkResult {
   benchmark_id: string;
   total_seeds: number;
+  valid_paired_seeds: number;
   master_seed: number;
   total_wall_clock_seconds: number;
   mean_p3_solve_time_ms: number;
@@ -139,6 +187,12 @@ export interface BenchmarkResult {
   mean_weighted_lateness_reduction_pct: number;
   p3_outperform_count: number;
   tie_count: number;
+  p3_worsened_count: number;
   p3_win_or_tie_rate_pct: number;
-  status_distribution: Record<string, number>;
+  a2_status_distribution: Record<string, number>;
+  p3_status_distribution: Record<string, number>;
+  status_distribution?: Record<string, number>;
+  artifact_path?: string;
+  scope_notice?: string;
+  records?: BenchmarkRecord[];
 }

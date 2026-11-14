@@ -44,7 +44,7 @@ export const SourceInventoryPanel: React.FC<Props> = ({ scenario, onSimulateStoc
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
         {scenario.sources.map((src) => {
           const isAtpAvailable = src.atp > 0;
-          const arrivalClock = src.source_id === 'S1' ? '10:15 (Usable: 10:30)' : '11:45 (Usable: 12:00)';
+          const arrivalClock = src.source_id === 'S1' ? '10:00 (Usable: 10:15)' : '11:50 (Usable: 12:05)';
 
           return (
             <div

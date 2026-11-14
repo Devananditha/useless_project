@@ -3,11 +3,15 @@ import {
   ScenarioSnapshot,
   PolicyComparisonResult,
   Proposal,
-  AuditEvent
+  AuditEvent,
+  SolveResponse,
+  CompetingReservationResponse,
+  ApprovalResponse
 } from './types';
 import {
   fetchScenarios,
   fetchScenario,
+  selectScenario,
   runSolve,
   triggerCompetingReservation,
   approveProposal,
@@ -36,34 +40,39 @@ export const App: React.FC = () => {
   const [selectedScenarioId, setSelectedScenarioId] = useState<string>('S-MATH-01');
   const [currentScenario, setCurrentScenario] = useState<ScenarioSnapshot | null>(null);
   const [comparison, setComparison] = useState<PolicyComparisonResult | null>(null);
+  const [activeProposal, setActiveProposal] = useState<Proposal | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const [staleBanner, setStaleBanner] = useState<boolean>(false);
+  const [staleMessage, setStaleMessage] = useState<string | null>(null);
   const [benchmarkOpen, setBenchmarkOpen] = useState<boolean>(false);
 
-  // Initialize
+  // Initialize and load scenario
   useEffect(() => {
-    loadInitialData();
+    loadInitialData(selectedScenarioId);
   }, [selectedScenarioId]);
 
-  const loadInitialData = async () => {
+  const loadInitialData = async (scenarioId: string) => {
     try {
       setLoading(true);
       setErrorBanner(null);
       setStaleBanner(false);
+      setStaleMessage(null);
       setSuccessBanner(null);
 
       const scList = await fetchScenarios();
       setScenarios(scList);
 
-      const sc = await fetchScenario(selectedScenarioId);
+      const sc = await fetchScenario(scenarioId);
       setCurrentScenario(sc);
 
-      // Automatically solve upon initial load
-      const comp = await runSolve(selectedScenarioId);
-      setComparison(comp);
+      // Solve on scenario load
+      const solveRes: SolveResponse = await runSolve(scenarioId);
+      setComparison(solveRes.comparison || null);
+      setActiveProposal(solveRes.active_proposal);
+      setCurrentScenario(solveRes.snapshot);
 
       const evts = await fetchAuditEvents();
       setAuditEvents(evts);
@@ -74,8 +83,14 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleScenarioChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setSelectedScenarioId(e.target.value);
+  const handleScenarioChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newId = e.target.value;
+    setSelectedScenarioId(newId);
+    try {
+      await selectScenario(newId);
+    } catch {
+      // Non-fatal if select endpoint unavailable
+    }
   };
 
   const handleRunSolve = async () => {
@@ -83,13 +98,13 @@ export const App: React.FC = () => {
       setLoading(true);
       setErrorBanner(null);
       setStaleBanner(false);
+      setStaleMessage(null);
       setSuccessBanner(null);
 
-      const comp = await runSolve(selectedScenarioId);
-      setComparison(comp);
-
-      const sc = await fetchScenario(selectedScenarioId);
-      setCurrentScenario(sc);
+      const solveRes: SolveResponse = await runSolve(selectedScenarioId);
+      setComparison(solveRes.comparison || null);
+      setActiveProposal(solveRes.active_proposal);
+      setCurrentScenario(solveRes.snapshot);
 
       const evts = await fetchAuditEvents();
       setAuditEvents(evts);
@@ -106,8 +121,14 @@ export const App: React.FC = () => {
       setErrorBanner(null);
       setSuccessBanner(null);
 
-      const { scenario } = await triggerCompetingReservation(selectedScenarioId, 'S1');
-      setCurrentScenario(scenario);
+      const res: CompetingReservationResponse = await triggerCompetingReservation(selectedScenarioId, 'S1');
+      setCurrentScenario(res.snapshot);
+
+      setStaleBanner(true);
+      setStaleMessage(
+        `Act 3 Stock-Race: S1 inventory was consumed by an external buyer (ATP 1 ➔ 0). Snapshot advanced to v${res.new_snapshot_version}. ` +
+        `The current active proposal (${activeProposal?.proposal_id || 'P3'}) was computed under v${activeProposal?.input_snapshot_version} and is now STALE.`
+      );
 
       const evts = await fetchAuditEvents();
       setAuditEvents(evts);
@@ -119,52 +140,60 @@ export const App: React.FC = () => {
   };
 
   const handleAdvisorApprove = async () => {
-    if (!comparison?.joint_p3) return;
+    if (!activeProposal) return;
 
     try {
       setLoading(true);
       setErrorBanner(null);
       setSuccessBanner(null);
 
-      const res = await approveProposal(comparison.joint_p3, 'Service Advisor');
+      const res: ApprovalResponse = await approveProposal(activeProposal.proposal_id);
 
-      if (res.status === 'APPROVED') {
-        setStaleBanner(false);
-        setSuccessBanner(
-          `Proposal ${res.proposal.proposal_id} APPROVED by Service Advisor. Bay B4 dispatch lock acquired and part dispatched.`
+      if (res.status === 'STALE_SNAPSHOT') {
+        // Optimistic concurrency gate abort
+        setStaleBanner(true);
+        setSuccessBanner(null);
+        setStaleMessage(
+          `STALE PROPOSAL ABORT: Proposal ${res.old_proposal?.proposal_id} evaluated under snapshot v${res.old_proposal?.input_snapshot_version} was REJECTED because live inventory has advanced to v${res.current_snapshot?.snapshot_version}. ` +
+          `A new recovery proposal (${res.new_proposal?.proposal_id}) selecting ${res.new_proposal?.selected_source_name} has been generated under v${res.current_snapshot?.snapshot_version}. ` +
+          `Human review and explicit re-approval are mandatory before local commitment.`
         );
-      }
 
-      // Update comparison
-      if (res.new_comparison) {
-        setComparison(res.new_comparison);
+        if (res.current_snapshot) {
+          setCurrentScenario(res.current_snapshot);
+        }
+        if (res.new_proposal) {
+          setActiveProposal(res.new_proposal);
+        }
+        if (res.new_comparison) {
+          setComparison(res.new_comparison);
+        }
+      } else if (res.status === 'APPROVED') {
+        // Accepted in local session
+        setStaleBanner(false);
+        setStaleMessage(null);
+        setSuccessBanner(res.message);
+
+        if (res.proposal) {
+          setActiveProposal(res.proposal);
+          if (comparison) {
+            setComparison({
+              ...comparison,
+              joint_p3: res.proposal,
+            });
+          }
+        }
+        if (res.current_snapshot) {
+          setCurrentScenario(res.current_snapshot);
+        }
       } else {
-        setComparison({
-          ...comparison,
-          joint_p3: res.proposal,
-        });
+        setErrorBanner(res.message || `Approval failed with status: ${res.status}`);
       }
-
-      const sc = await fetchScenario(selectedScenarioId);
-      setCurrentScenario(sc);
 
       const evts = await fetchAuditEvents();
       setAuditEvents(evts);
     } catch (err: any) {
-      // Check if stale snapshot error occurred
-      const msg = err.message || '';
-      if (msg.includes('STALE_SNAPSHOT') || msg.includes('stale snapshot') || msg.includes('concurrency')) {
-        setStaleBanner(true);
-        // Refresh scenario and solve
-        const sc = await fetchScenario(selectedScenarioId);
-        setCurrentScenario(sc);
-        const comp = await runSolve(selectedScenarioId);
-        setComparison(comp);
-        const evts = await fetchAuditEvents();
-        setAuditEvents(evts);
-      } else {
-        setErrorBanner(msg);
-      }
+      setErrorBanner(err.message || 'Approval request failed');
     } finally {
       setLoading(false);
     }
@@ -174,7 +203,7 @@ export const App: React.FC = () => {
     try {
       setLoading(true);
       await resetScenarioStore(selectedScenarioId);
-      await loadInitialData();
+      await loadInitialData(selectedScenarioId);
     } catch (err: any) {
       setErrorBanner(err.message || 'Reset failed');
     } finally {
@@ -245,7 +274,7 @@ export const App: React.FC = () => {
       <div className="card" style={{ marginBottom: '20px', background: '#0e1627', borderColor: '#2b3b55' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
           {/* Scenario Selector */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: '320px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: '340px' }}>
             <span style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-secondary)' }}>
               Scenario:
             </span>
@@ -263,7 +292,7 @@ export const App: React.FC = () => {
                 flex: 1
               }}
             >
-              <option value="S-MATH-01">Act 1: Canonical S-MATH-01 (Immobilized Vehicle on Hoist)</option>
+              <option value="S-MATH-01">Act 1: Canonical S-MATH-01 (Ford Explorer on Hoist)</option>
               <option value="S-MATH-01-ROLLABLE">Act 2: S-MATH-01-ROLLABLE (Vehicle Relocatable to H2)</option>
             </select>
           </div>
@@ -291,21 +320,21 @@ export const App: React.FC = () => {
 
             <button
               onClick={handleAdvisorApprove}
-              disabled={loading || !comparison?.joint_p3}
+              disabled={loading || !activeProposal || activeProposal.approval_status === 'APPROVED'}
               style={{
                 padding: '9px 18px',
-                background: 'var(--accent-emerald)',
-                color: '#000',
+                background: activeProposal?.approval_status === 'APPROVED' ? '#334155' : 'var(--accent-emerald)',
+                color: activeProposal?.approval_status === 'APPROVED' ? 'var(--text-muted)' : '#000',
                 fontWeight: '700',
                 fontSize: '13px',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px',
-                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.4)'
+                boxShadow: activeProposal?.approval_status === 'APPROVED' ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.4)'
               }}
             >
               <CheckCircle size={16} />
-              Advisor Approve & Commit
+              {activeProposal?.approval_status === 'APPROVED' ? 'Proposal Committed (Local)' : 'Advisor Approve & Commit'}
             </button>
           </div>
         </div>
@@ -328,11 +357,12 @@ export const App: React.FC = () => {
           <AlertOctagon size={24} style={{ color: '#fda4af', flexShrink: 0, marginTop: '2px' }} />
           <div>
             <div style={{ fontSize: '15px', fontWeight: '800', color: '#fda4af' }}>
-              ACT 3: STALE SNAPSHOT DETECTED — AUTOMATED COMMIT ABORTED
+              ACT 3: STALE SNAPSHOT DETECTED — COMMIT ABORTED
             </div>
-            <p style={{ fontSize: '13px', color: '#ffe4e6', marginTop: '4px' }}>
-              Snapshot version advanced (v14 ➔ v15) while awaiting advisor authorization because competing repair order RO-1099 claimed S1 (Metro Courier).
-              In accordance with safety invariants, StallBreaker aborted commit, triggered an automated re-solve under v15 (which selected S2), and flagged that human re-approval is mandatory before dispatch.
+            <p style={{ fontSize: '13px', color: '#ffe4e6', marginTop: '4px', lineHeight: '1.4' }}>
+              {staleMessage || (
+                'Snapshot version advanced while awaiting advisor authorization. In accordance with safety invariants, StallBreaker aborted commit, triggered an automated re-solve under the latest version, and requires explicit human re-approval before commitment.'
+              )}
             </p>
           </div>
         </div>
@@ -379,7 +409,7 @@ export const App: React.FC = () => {
 
       <GanttTimeline
         baselineProposal={comparison?.baseline_a2 || null}
-        jointProposal={comparison?.joint_p3 || null}
+        jointProposal={activeProposal || comparison?.joint_p3 || null}
       />
 
       <PhysicalStatePanel scenario={currentScenario} />

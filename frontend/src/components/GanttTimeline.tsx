@@ -7,18 +7,18 @@ interface Props {
 }
 
 export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal }) => {
-  const [viewMode, setViewMode] = useState<'P3' | 'A2' | 'BOTH'>('P3');
+  const [viewMode, setViewMode] = useState<'P3' | 'A2'>('P3');
   const [hoveredInterval, setHoveredInterval] = useState<ScheduledInterval | null>(null);
 
   const activeProposal = viewMode === 'A2' ? baselineProposal : jointProposal;
 
   // Timeline geometry
-  // Range: t=0 (08:00) to t=96 (16:00), 5 min per tick = 12 ticks/hr
-  const totalTicks = 96;
-  const svgWidth = 1000;
+  // Canonical horizon: t=0 (08:00) to t=108 (17:00), 5 min per tick = 12 ticks/hr
+  const totalTicks = 108;
+  const svgWidth = 1050;
   const trackHeight = 44;
-  const headerHeight = 36;
-  const labelWidth = 150;
+  const headerHeight = 40;
+  const labelWidth = 160;
   const chartWidth = svgWidth - labelWidth - 20;
 
   const tickToX = (tick: number) => {
@@ -35,30 +35,31 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
     { label: '14:00', tick: 72 },
     { label: '15:00', tick: 84 },
     { label: '16:00', tick: 96 },
+    { label: '17:00', tick: 108 },
   ];
 
   const getColorForOperation = (op: string) => {
-    if (op.includes('Stall') || op.includes('Immobilized')) return '#f59e0b'; // amber
+    if (op.includes('Stall') || op.includes('Immobilized') || op.includes('Staged in Holding')) return '#f59e0b'; // amber
     if (op.includes('Installation') || op.includes('Active')) return '#06b6d4'; // cyan
-    if (op.includes('Clearance')) return '#10b981'; // emerald
-    if (op.includes('Service') || op.includes('Alignment')) return '#3b82f6'; // blue
-    if (op.includes('Relocation') || op.includes('Transit') || op.includes('Holding')) return '#8b5cf6'; // purple
+    if (op.includes('Clearance') || op.includes('Verification')) return '#10b981'; // emerald
+    if (op.includes('Service') || op.includes('Calibration') || op.includes('ADAS')) return '#3b82f6'; // blue
+    if (op.includes('Relocation') || op.includes('Transit') || op.includes('Return')) return '#8b5cf6'; // purple
     return '#64748b';
   };
 
   const tracks = [
     { id: 'BAY_B4', label: 'Bay B4 (Hoist)', y: headerHeight },
     { id: 'HOLDING_H2', label: 'Holding Area H2', y: headerHeight + trackHeight },
-    { id: 'RO_1042', label: 'RO-1042 (Wait/Repair)', y: headerHeight + trackHeight * 2 },
-    { id: 'RO_1051', label: 'RO-1051 (Fleet Service)', y: headerHeight + trackHeight * 3 },
+    { id: 'RO_1042', label: 'RO-1042 (Ford Explorer)', y: headerHeight + trackHeight * 2 },
+    { id: 'RO_1051', label: 'RO-1051 (Fleet F-150)', y: headerHeight + trackHeight * 3 },
   ];
 
   const totalHeight = headerHeight + trackHeight * tracks.length + 20;
 
   // Map intervals to tracks
   const getTrackY = (interval: ScheduledInterval) => {
-    if (interval.entity_id === 'Bay B4') return tracks[0].y;
-    if (interval.entity_id === 'H2') return tracks[1].y;
+    if (interval.entity_id === 'B4' || interval.entity_type === 'BAY') return tracks[0].y;
+    if (interval.entity_id === 'H2' || interval.entity_type === 'HOLDING') return tracks[1].y;
     if (interval.entity_id === 'RO-1042') return tracks[2].y;
     if (interval.entity_id === 'RO-1051') return tracks[3].y;
     return tracks[0].y;
@@ -68,8 +69,8 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
     <div className="card" style={{ marginBottom: '20px' }}>
       <div className="card-title">
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span>Gantt Operational Timeline & Hoist Occupancy</span>
-          <span className="badge badge-optimal">5-min Ticks</span>
+          <span>Gantt Operational Timeline & Hoist Scheduling (Horizon: 08:00 – 17:00)</span>
+          <span className="badge badge-optimal">5-min Ticks (H=108)</span>
         </div>
         <div style={{ display: 'flex', gap: '6px' }}>
           <button
@@ -103,7 +104,7 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
         <svg
           viewBox={`0 0 ${svgWidth} ${totalHeight}`}
           className="timeline-svg"
-          style={{ minWidth: '760px' }}
+          style={{ minWidth: '820px' }}
         >
           {/* Background grid */}
           {hours.map((h, i) => {
@@ -121,7 +122,7 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
                 />
                 <text
                   x={x}
-                  y={headerHeight - 10}
+                  y={headerHeight - 12}
                   fill="#94a3b8"
                   fontSize="11"
                   fontWeight="600"
@@ -156,26 +157,47 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
             </g>
           ))}
 
-          {/* Promise vertical lines */}
-          {/* RO-1051 Promise: t=42 (11:30) */}
+          {/* Canonical Promise Marker Lines */}
+          {/* RO-1051 Promise: t=54 (12:30) */}
           <line
-            x1={tickToX(42)}
+            x1={tickToX(54)}
             y1={headerHeight}
-            x2={tickToX(42)}
+            x2={tickToX(54)}
             y2={totalHeight - 10}
             stroke="var(--accent-rose)"
             strokeWidth="2"
             strokeDasharray="4 2"
           />
           <text
-            x={tickToX(42)}
-            y={headerHeight - 20}
+            x={tickToX(54)}
+            y={headerHeight - 22}
             fill="var(--accent-rose)"
             fontSize="10"
             fontWeight="700"
             textAnchor="middle"
           >
-            RO-1051 Promise (11:30)
+            RO-1051 Promise (t=54, 12:30)
+          </text>
+
+          {/* RO-1042 Promise: t=66 (13:30) */}
+          <line
+            x1={tickToX(66)}
+            y1={headerHeight}
+            x2={tickToX(66)}
+            y2={totalHeight - 10}
+            stroke="var(--accent-cyan)"
+            strokeWidth="1.5"
+            strokeDasharray="3 3"
+          />
+          <text
+            x={tickToX(66)}
+            y={headerHeight - 22}
+            fill="var(--accent-cyan)"
+            fontSize="10"
+            fontWeight="700"
+            textAnchor="middle"
+          >
+            RO-1042 Promise (t=66, 13:30)
           </text>
 
           {/* Active Schedule Blocks */}
@@ -205,7 +227,7 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
                   stroke="#ffffff"
                   strokeWidth="0.5"
                 />
-                {width > 45 && (
+                {width > 35 && (
                   <text
                     x={startX + width / 2}
                     y={y + height / 2 + 4}
@@ -214,7 +236,7 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
                     fontWeight="700"
                     textAnchor="middle"
                   >
-                    {interval.operation.length > 20 ? `${interval.operation.slice(0, 18)}...` : interval.operation}
+                    {interval.operation.length > 22 ? `${interval.operation.slice(0, 20)}...` : interval.operation}
                   </text>
                 )}
               </g>
@@ -241,7 +263,7 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
           >
             <div style={{ fontWeight: '700', color: 'var(--accent-cyan)' }}>{hoveredInterval.operation}</div>
             <div style={{ color: 'var(--text-secondary)' }}>
-              Entity: <strong>{hoveredInterval.entity_id}</strong> | Window: <strong>{hoveredInterval.start_clock} ➔ {hoveredInterval.end_clock}</strong>
+              Entity: <strong>{hoveredInterval.entity_id}</strong> | Window: <strong>{hoveredInterval.start_clock} (t={hoveredInterval.start_tick}) ➔ {hoveredInterval.end_clock} (t={hoveredInterval.end_tick})</strong>
             </div>
             <div style={{ color: 'var(--text-muted)' }}>
               Duration: {(hoveredInterval.end_tick - hoveredInterval.start_tick) * 5} min ({hoveredInterval.end_tick - hoveredInterval.start_tick} ticks)
@@ -254,7 +276,7 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#f59e0b', borderRadius: '2px' }} />
-          <span>Bay Immobilized / Stall</span>
+          <span>Bay Immobilized / Staged in Holding</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#06b6d4', borderRadius: '2px' }} />
@@ -262,15 +284,15 @@ export const GanttTimeline: React.FC<Props> = ({ baselineProposal, jointProposal
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#10b981', borderRadius: '2px' }} />
-          <span>Post-Repair Clearance (10m)</span>
+          <span>Clearance Transit (10m)</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#3b82f6', borderRadius: '2px' }} />
-          <span>Fleet Alignment Service (RO-1051)</span>
+          <span>Fleet ADAS Calibration (RO-1051)</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div style={{ width: '12px', height: '12px', background: '#8b5cf6', borderRadius: '2px' }} />
-          <span>Relocation / Holding Transit</span>
+          <span>Relocation / Return Transit (15m)</span>
         </div>
       </div>
     </div>

@@ -10,6 +10,7 @@ from backend.models import (
 )
 from backend.state_store import store
 from backend.solver import solve_recovery_problem
+from backend.policies import run_policy_comparison
 
 
 def revalidate_and_approve_proposal(proposal_id: str) -> Dict[str, Any]:
@@ -64,8 +65,10 @@ def revalidate_and_approve_proposal(proposal_id: str) -> Dict[str, Any]:
             version_after=current_v
         )
 
-        new_proposal = solve_recovery_problem(current_snapshot, proposal.policy_id)
-        store.save_proposal(new_proposal)
+        new_comparison = run_policy_comparison(current_snapshot)
+        store.save_proposal(new_comparison.baseline_a2)
+        store.save_proposal(new_comparison.joint_p3)
+        new_proposal = new_comparison.joint_p3
 
         store.log_event(
             event_type="AWAITING_HUMAN_APPROVAL",
@@ -88,18 +91,19 @@ def revalidate_and_approve_proposal(proposal_id: str) -> Dict[str, Any]:
             ),
             "old_proposal": proposal,
             "new_proposal": new_proposal,
+            "new_comparison": new_comparison,
             "requires_human_approval": True,
             "current_snapshot": current_snapshot
         }
 
-    # Versions match: Advisor authorization accepted
+    # Versions match: Advisor authorization accepted in local prototype state
     proposal.approval_status = ApprovalStatus.APPROVED
     store.log_event(
         event_type="PROPOSAL_COMMITTED",
         description=(
-            f"Service Advisor authorized recovery proposal {proposal.proposal_id}. "
+            f"Service Advisor authorized recovery proposal {proposal.proposal_id} in local prototype. "
             f"Source {proposal.selected_source_id} locked at ${proposal.parts_freight_cost:.2f}. "
-            f"Bay B4 release scheduled at {proposal.b4_release_clock}."
+            f"Bay B4 release scheduled at {proposal.b4_release_clock}. (Simulation only — no real DMS dispatch executed)."
         ),
         version_before=current_v,
         version_after=current_v,
@@ -109,7 +113,7 @@ def revalidate_and_approve_proposal(proposal_id: str) -> Dict[str, Any]:
     return {
         "success": True,
         "status": ApprovalStatus.APPROVED.value,
-        "message": f"Proposal {proposal.proposal_id} successfully authorized by Service Advisor and committed to shop dispatch.",
+        "message": f"Proposal {proposal.proposal_id} successfully authorized by Service Advisor in local prototype session (Simulation only — no real DMS dispatch or inventory reservation executed).",
         "proposal": proposal,
         "requires_human_approval": False,
         "current_snapshot": current_snapshot

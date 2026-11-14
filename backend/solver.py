@@ -204,6 +204,12 @@ def solve_recovery_problem(
             rejected_options, time.perf_counter() - t_start
         )
 
+    pass1_status_enum = (
+        SolverStatusEnum.OPTIMAL if status1 == cp_model.OPTIMAL
+        else SolverStatusEnum.FEASIBLE if status1 == cp_model.FEASIBLE
+        else SolverStatusEnum.UNKNOWN
+    )
+
     best_z1 = int(solver.ObjectiveValue())
 
     # PASS 2: Multi-pass Lexicographic optimization:
@@ -212,13 +218,21 @@ def solve_recovery_problem(
     model.Minimize(freight_cost)
     status2 = solver.Solve(model)
 
-    final_status = solver.StatusName(status2)
-    status_enum = (
+    pass2_status_enum = (
         SolverStatusEnum.OPTIMAL if status2 == cp_model.OPTIMAL
         else SolverStatusEnum.FEASIBLE if status2 == cp_model.FEASIBLE
         else SolverStatusEnum.UNKNOWN
     )
 
+    # Combined status: Only OPTIMAL if BOTH lexicographic passes are provably OPTIMAL
+    if status1 == cp_model.OPTIMAL and status2 == cp_model.OPTIMAL:
+        status_enum = SolverStatusEnum.OPTIMAL
+    elif status1 in (cp_model.OPTIMAL, cp_model.FEASIBLE) and status2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        status_enum = SolverStatusEnum.FEASIBLE
+    else:
+        status_enum = SolverStatusEnum.UNKNOWN
+
+    final_status = f"P1:{solver.StatusName(status1)}_P2:{solver.StatusName(status2)}"
     best_bound_val = solver.BestObjectiveBound() if status2 == cp_model.FEASIBLE else None
     solve_duration_ms = (time.perf_counter() - t_start) * 1000.0
 
@@ -326,6 +340,18 @@ def solve_recovery_problem(
             end_clock=tick_to_clock(end_1051)
         ))
 
+        # Bay B4 post-service clearance transit: 12:00 to 12:10 (end_1051 to end_1051 + clearance)
+        b4_clear_end = end_1051 + snapshot.clearance_duration_ticks
+        scheduled_intervals.append(ScheduledInterval(
+            entity_type="BAY",
+            entity_id="B4",
+            operation="Bay B4: Post-Service Clearance Transit (RO-1051)",
+            start_tick=end_1051,
+            end_tick=b4_clear_end,
+            start_clock=tick_to_clock(end_1051),
+            end_clock=tick_to_clock(b4_clear_end)
+        ))
+
         # RO-1042 return transit and reassembly
         st_ret = int(solver.Value(ro1042_return_start))
         arr_ret = st_ret + snapshot.relocation_duration_ticks
@@ -362,6 +388,16 @@ def solve_recovery_problem(
             end_clock=tick_to_clock(end_install_reloc)
         ))
 
+        scheduled_intervals.append(ScheduledInterval(
+            entity_type="JOB",
+            entity_id="RO-1042",
+            operation="RO-1042: Final Verification & Bay Clearance",
+            start_tick=end_install_reloc,
+            end_tick=end_clear_reloc,
+            start_clock=tick_to_clock(end_install_reloc),
+            end_clock=tick_to_clock(end_clear_reloc)
+        ))
+
     # Explanations
     feasibility_explanations = [
         f"Selected source {chosen_source_id} ({chosen_source_name}) with landed freight ${chosen_cost:.2f}.",
@@ -393,6 +429,8 @@ def solve_recovery_problem(
         downstream_delay_minutes=val_ro1051_late * 5,
         parts_freight_cost=chosen_cost,
         solver_status=status_enum,
+        pass1_status=pass1_status_enum,
+        pass2_status=pass2_status_enum,
         best_bound=best_bound_val,
         solve_time_ms=solve_duration_ms,
         feasibility_explanations=feasibility_explanations,
@@ -432,6 +470,8 @@ def _create_infeasible_proposal(
         downstream_delay_minutes=540,
         parts_freight_cost=0.0,
         solver_status=SolverStatusEnum.INFEASIBLE,
+        pass1_status=SolverStatusEnum.INFEASIBLE,
+        pass2_status=SolverStatusEnum.INFEASIBLE,
         best_bound=None,
         solve_time_ms=solve_duration * 1000.0,
         feasibility_explanations=explanations,
