@@ -121,8 +121,8 @@ def test_07_h2_capacity_reservation_before_movement():
     assert any(r.reason_code == "HOLDING_CAPACITY_EXCEEDED" for r in rejections)
 
 
-def test_08_bay_no_overlap():
-    """8. Bay no-overlap: RO-1051 cannot enter B4 while RO-1042 occupies B4."""
+def test_08_single_bay_milestone_precedence():
+    """8. Single-bay milestone precedence: RO-1051 on Bay B4 begins only after RO-1042 installation and clearance transit complete."""
     snap = get_canonical_s_math_01_fixture()
     prop = solve_recovery_problem(snap, PolicyId.P3)
 
@@ -132,8 +132,8 @@ def test_08_bay_no_overlap():
     assert ro1051_start >= b4_release
 
 
-def test_09_technician_no_overlap():
-    """9. Technician no-overlap: Tech K1 cannot perform install and calibration simultaneously."""
+def test_09_sequential_job_milestone_ordering():
+    """9. Sequential job milestone ordering: On the single shared alignment hoist, RO-1051 calibration is scheduled strictly after RO-1042 completes installation and clearance via linear milestone precedence."""
     snap = get_canonical_s_math_01_fixture()
     prop = solve_recovery_problem(snap, PolicyId.P3)
 
@@ -457,3 +457,121 @@ def test_27_canonical_fixture_promise_times_and_models():
     assert s1.cost == 55.0
     assert s2.usable_time_ticks == 49  # 12:05 PM
     assert s2.cost == 18.0
+
+
+# =========================================================================
+# Scenario-Scoped Identity & Earliest-Start Patch Tests (28-31)
+# =========================================================================
+
+def test_28_cross_scenario_approval_rejected():
+    """28. Proposal approval is strictly rejected when proposal scenario_id != active scenario_id."""
+    store.reset_to_canonical()
+    # 1. Generate P3 proposal on canonical scenario S-MATH-01
+    solve_res = solve_scenario(SolveRequest(scenario_id="S-MATH-01", compare_a2_p3=True))
+    canon_prop_id = solve_res.active_proposal.proposal_id
+
+    # 2. Switch to S-MATH-01-ROLLABLE (both have snapshot version 14)
+    select_scenario("S-MATH-01-ROLLABLE")
+    assert store.current_scenario_id == "S-MATH-01-ROLLABLE"
+    assert store.version == 14
+
+    # 3. Attempt to approve S-MATH-01 proposal while S-MATH-01-ROLLABLE is active
+    appr_res = approve_proposal(canon_prop_id)
+
+    # 4. Verification: Rejected for scenario mismatch
+    assert appr_res["success"] is False
+    assert appr_res["status"] == "SCENARIO_MISMATCH"
+    assert "Scenario mismatch" in appr_res["message"]
+
+    # 5. Generate fresh proposal for newly active scenario S-MATH-01-ROLLABLE
+    fresh_solve = solve_scenario(SolveRequest(scenario_id="S-MATH-01-ROLLABLE", compare_a2_p3=True))
+    fresh_prop_id = fresh_solve.active_proposal.proposal_id
+
+    # 6. Verification: New proposal can be approved when scenario and version match
+    commit_res = approve_proposal(fresh_prop_id)
+    assert commit_res["success"] is True
+    assert commit_res["status"] == "APPROVED"
+    assert commit_res["proposal"].proposal_id == fresh_prop_id
+
+
+def test_29_reverse_cross_scenario_approval_rejected():
+    """29. Reverse cross-scenario approval rejection: S-MATH-01-ROLLABLE proposal rejected on S-MATH-01."""
+    store.reset_to_canonical()
+    select_scenario("S-MATH-01-ROLLABLE")
+
+    # Generate proposal on S-MATH-01-ROLLABLE
+    roll_solve = solve_scenario(SolveRequest(scenario_id="S-MATH-01-ROLLABLE", compare_a2_p3=True))
+    roll_prop_id = roll_solve.active_proposal.proposal_id
+
+    # Switch active scenario back to S-MATH-01
+    select_scenario("S-MATH-01")
+    assert store.current_scenario_id == "S-MATH-01"
+
+    # Attempt to approve rollable proposal while S-MATH-01 is active
+    appr_res = approve_proposal(roll_prop_id)
+    assert appr_res["success"] is False
+    assert appr_res["status"] == "SCENARIO_MISMATCH"
+    assert "Scenario mismatch" in appr_res["message"]
+
+    # Fresh proposal on S-MATH-01 approves successfully
+    canon_solve = solve_scenario(SolveRequest(scenario_id="S-MATH-01", compare_a2_p3=True))
+    canon_prop_id = canon_solve.active_proposal.proposal_id
+    commit_res = approve_proposal(canon_prop_id)
+    assert commit_res["success"] is True
+    assert commit_res["status"] == "APPROVED"
+
+
+def test_30_earliest_start_canonical_slack_promise():
+    """30. Earliest feasible milestone start enforced via AddMaxEquality under zero-lateness slack conditions (Canonical)."""
+    snap = get_canonical_s_math_01_fixture()
+    # Provide abundant slack so lateness is 0 regardless of start time
+    snap.ro1042.promise_ticks = 100  # 16:20 PM (abundant slack: finish 63 <= 100)
+    snap.ro1051.promise_ticks = 100  # 16:20 PM (abundant slack: finish 87 <= 100)
+
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+
+    # In Pass 1, weighted lateness is 0
+    assert prop.weighted_lateness_ticks == 0.0
+    # In Pass 2, freight cost is minimized -> selects S2 ($18.00 freight, usable at tick 49)
+    assert prop.selected_source_id == "S2"
+
+    # AddMaxEquality guarantees install start is strictly max(current_t=21, ready_time=49) = 49
+    # Cannot be delayed arbitrarily to tick 50, 60, etc.
+    install_int = [i for i in prop.scheduled_intervals if "Part Installation" in i.operation][0]
+    assert install_int.start_tick == 49
+    assert install_int.end_tick == 49 + 12  # 61
+
+    # B4 release must be strictly 49 + 12 + 2 = 63
+    assert prop.b4_release_tick == 63
+    # RO-1051 finish must be strictly 63 + 24 = 87
+    assert prop.ro1051_finish_tick == 87
+
+
+def test_31_earliest_start_rollable_slack_promise():
+    """31. Earliest feasible milestone start enforced via AddMaxEquality under zero-lateness slack conditions (Rollable)."""
+    snap = get_rollable_s_math_01_fixture()
+    snap.ro1042.promise_ticks = 100  # 16:20 PM (abundant slack: finish 67 <= 100)
+    snap.ro1051.promise_ticks = 50   # 12:10 PM (forces relocation: finish 48 <= 50, whereas hold yields >= 65)
+
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+
+    assert prop.weighted_lateness_ticks == 0.0
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    assert prop.selected_source_id == "S2"
+
+    # RO-1051 on B4: 24 to 48. B4 clearance ends at 50. S2 ready at 49.
+    # AddMaxEquality strictly forces return start = max(50, 49) = 50.
+    ret_trans = [i for i in prop.scheduled_intervals if "Return Transit" in i.operation][0]
+    assert ret_trans.start_tick == 50
+    assert ret_trans.end_tick == 53
+
+    # Installation on B4 must start immediately upon arrival at 53
+    install_int = [i for i in prop.scheduled_intervals if "Part Installation" in i.operation][0]
+    assert install_int.start_tick == 53
+    assert install_int.end_tick == 65
+
+    # Final clearance must end at 67
+    final_clear = [i for i in prop.scheduled_intervals if "Final Verification & Bay Clearance" in i.operation][0]
+    assert final_clear.start_tick == 65
+    assert final_clear.end_tick == 67
+

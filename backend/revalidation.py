@@ -34,7 +34,36 @@ def revalidate_and_approve_proposal(proposal_id: str) -> Dict[str, Any]:
     proposal_v = proposal.input_snapshot_version
     current_v = current_snapshot.snapshot_version
 
-    # Check optimistic concurrency version
+    # 1. Enforce scenario identity: Proposal must match the currently active scenario
+    if proposal.scenario_id != current_snapshot.scenario_id:
+        store.log_event(
+            event_type="SCENARIO_MISMATCH_ABORT",
+            description=(
+                f"Commit rejected for proposal {proposal.proposal_id}: Proposal was generated for scenario "
+                f"'{proposal.scenario_id}', but the currently active scenario is '{current_snapshot.scenario_id}'. "
+                f"Cross-scenario proposal commitment is strictly forbidden."
+            ),
+            version_before=current_v,
+            version_after=current_v,
+            details={
+                "proposal_id": proposal.proposal_id,
+                "proposal_scenario_id": proposal.scenario_id,
+                "active_scenario_id": current_snapshot.scenario_id
+            }
+        )
+        return {
+            "success": False,
+            "status": "SCENARIO_MISMATCH",
+            "message": (
+                f"Commit rejected: Scenario mismatch. Proposal {proposal.proposal_id} belongs to scenario "
+                f"'{proposal.scenario_id}', but the active scenario is '{current_snapshot.scenario_id}'."
+            ),
+            "proposal": proposal,
+            "requires_human_approval": True,
+            "current_snapshot": current_snapshot
+        }
+
+    # 2. Check optimistic concurrency version
     if proposal_v != current_v:
         # State drift detected! Stale proposal abort
         proposal.approval_status = ApprovalStatus.STALE_SNAPSHOT

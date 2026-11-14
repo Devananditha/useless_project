@@ -149,7 +149,11 @@ export const App: React.FC = () => {
 
       const res: ApprovalResponse = await approveProposal(activeProposal.proposal_id);
 
-      if (res.status === 'STALE_SNAPSHOT') {
+      if (res.status === 'SCENARIO_MISMATCH') {
+        setErrorBanner(`Scenario Mismatch: ${res.message} Please solve and approve within the active scenario.`);
+        setStaleBanner(false);
+        setSuccessBanner(null);
+      } else if (res.status === 'STALE_SNAPSHOT') {
         // Optimistic concurrency gate abort
         setStaleBanner(true);
         setSuccessBanner(null);

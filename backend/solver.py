@@ -115,10 +115,10 @@ def solve_recovery_problem(
     model.Add(freight_cost == sum(int(round(s.cost * 100)) * src_vars[s.source_id] for s in eligible_sources))
 
     # Milestones for Option 1 (HOLD_ON_BAY)
-    # RO-1042 install start = max(current_t, ready_time)
+    # RO-1042 install start = max(current_t, ready_time) strictly enforced via AddMaxEquality
     ro1042_start_hold = model.NewIntVar(current_t, H, "ro1042_start_hold")
-    model.Add(ro1042_start_hold >= ready_time)
-    model.Add(ro1042_start_hold >= current_t)
+    current_t_const = model.NewConstant(current_t)
+    model.AddMaxEquality(ro1042_start_hold, [current_t_const, ready_time])
 
     # RO-1042 completion on hold = ro1042_start_hold + 12 (install) + 2 (clearance)
     ro1042_comp_hold = model.NewIntVar(0, H + 20, "ro1042_comp_hold")
@@ -150,10 +150,10 @@ def solve_recovery_problem(
     b4_avail_after_ro1051 = model.NewIntVar(0, H + 40, "b4_avail_after_ro1051")
     model.Add(b4_avail_after_ro1051 == ro1051_service_end_reloc + snapshot.clearance_duration_ticks)
 
-    # RO-1042 return transit to B4 starts when BOTH B4 is available and part is ready:
+    # RO-1042 return transit to B4 starts at earliest physically feasible moment:
+    # max(B4 available after clearance, selected part ready time) strictly enforced via AddMaxEquality
     ro1042_return_start = model.NewIntVar(current_t, H + 40, "ro1042_return_start")
-    model.Add(ro1042_return_start >= b4_avail_after_ro1051)
-    model.Add(ro1042_return_start >= ready_time)
+    model.AddMaxEquality(ro1042_return_start, [b4_avail_after_ro1051, ready_time])
 
     # Return transit takes 3 ticks, then install takes 12 ticks, then clearance takes 2 ticks:
     ro1042_comp_reloc = model.NewIntVar(0, H + 60, "ro1042_comp_reloc")
