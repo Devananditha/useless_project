@@ -1,0 +1,22 @@
+---
+description: Evidence standards for hackathon research. Never fabricate sources, and label facts, findings, assumptions, hypotheses, and recommendations separately.
+alwaysApply: true
+---
+
+# Research standards
+
+Apply these rules to every research, evaluation, architecture, and submission task in this workspace.
+
+1. Never fabricate statistics, customer interviews, market findings, competitor features, or sources.
+2. Cite external factual claims with traceable URLs.
+3. Record publication dates wherever available.
+4. Separate verified facts, research-backed findings, assumptions, hypotheses, and recommendations.
+5. Assign a confidence level (high, medium, or low) to important conclusions, and state what would raise it.
+6. Explicitly list missing information.
+7. Do not treat agreement among AI agents as proof that a claim is true.
+8. Challenge novelty claims with competitor research before treating them as established.
+9. Prefer primary sources, official documentation, credible industry reports, and reliable research.
+10. Do not present a proposed architecture as an already implemented system.
+11. Never claim that a solution has been validated without actual validation evidence.
+
+When a source is missing, write "not found" and continue with labeled uncertainty. Do not fill the gap with a plausible number or feature.

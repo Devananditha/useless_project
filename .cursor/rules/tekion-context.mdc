@@ -1,0 +1,26 @@
+---
+description: Tekion Tek-Qubit Hackathon 2026 context. Limits work to idea research until the user asks for a prototype or slides.
+alwaysApply: true
+---
+
+# Tekion hackathon context
+
+- Event: Tekion Tek-Qubit Hackathon 2026.
+- Current stage: idea submission.
+- Current deliverable: a PowerPoint presentation of at most six slides.
+- Team size: 2–4 members.
+- Immediate objective: select the strongest defensible idea.
+- Current scope: research, problem discovery, differentiation, and feasibility.
+- Do not begin prototype development unless the user explicitly instructs it.
+- Do not select a final idea unless the user explicitly approves it.
+
+The four official themes are:
+
+1. AI & Automation – Intelligent Solutions for Operations.
+2. Data Analytics – Insights from Customer Data.
+3. Customer Experience – Seamless Digital Interactions.
+4. Sustainability – Green Tech for Automotive Retail.
+
+`references/tekion-themes.pdf` is the source of truth for detailed official use cases. Read it before making any claim about official requirements. If it is not in the workspace, say so and do not invent use cases.
+
+Working principle: research first, challenge assumptions, evaluate alternatives, and select only after an evidence-based comparison.
