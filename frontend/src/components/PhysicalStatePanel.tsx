@@ -1,6 +1,6 @@
 import React from 'react';
 import { ScenarioSnapshot, VehicleState, BayState } from '../types';
-import { ShieldCheck, AlertCircle, ArrowRight } from './Icons';
+import { ShieldCheck, AlertCircle, ArrowRight, CheckCircle2, XCircle } from './Icons';
 
 interface Props {
   scenario: ScenarioSnapshot | null;
@@ -11,6 +11,10 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
 
   const currentVehicleState: VehicleState = scenario.ro1042.current_vehicle_state;
   const currentBayState: BayState = scenario.bay_b4_state;
+  const isImmobilized = currentVehicleState === 'PARTIALLY_DISMANTLED';
+  const hasSignoff = scenario.ro1042.technician_signoff_recorded;
+  const hasH2Capacity = scenario.h2_available_stalls > 0;
+  const isRelocationEligible = !isImmobilized && hasSignoff && hasH2Capacity;
 
   const vehicleStates: { id: VehicleState; label: string }[] = [
     { id: 'PARTIALLY_DISMANTLED', label: 'Partially Dismantled' },
@@ -32,12 +36,12 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
       <div className="card-title">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <ShieldCheck size={18} style={{ color: 'var(--accent-emerald)' }} />
-          <span>Physical State Machine & Safety Invariant Gates</span>
+          <span>Physical State Machine & Pre-Solver Feasibility Gates</span>
         </div>
-        <span className="badge badge-optimal">Safety-Gated</span>
+        <span className="badge badge-optimal">Safety Invariants Enforced</span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
         {/* Vehicle Physical State Progression */}
         <div style={{ background: '#0e1626', padding: '14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
           <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--accent-cyan)', marginBottom: '8px' }}>
@@ -53,7 +57,7 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
                       padding: '5px 9px',
                       borderRadius: '4px',
                       fontSize: '11px',
-                      fontWeight: isActive ? '700' : '500',
+                      fontWeight: isActive ? '800' : '500',
                       background: isActive ? 'var(--accent-cyan)' : '#1e293b',
                       color: isActive ? '#000' : 'var(--text-muted)',
                       border: isActive ? '1px solid #ffffff' : '1px solid transparent',
@@ -69,14 +73,15 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
               );
             })}
           </div>
-          <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            Physical Relocation Precondition: {scenario.ro1042.current_vehicle_state === 'PARTIALLY_DISMANTLED' ? (
-              <span style={{ color: 'var(--accent-amber)', fontWeight: '600' }}>
-                IMMOBILIZED (Wheels/Hub detached; cannot roll; hoist locked)
+          <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Physical Condition:{' '}
+            {isImmobilized ? (
+              <span style={{ color: 'var(--accent-amber)', fontWeight: '700' }}>
+                IMMOBILIZED (Wheels/Hub detached; vehicle cannot roll; locks hoist)
               </span>
             ) : (
-              <span style={{ color: 'var(--accent-emerald)', fontWeight: '600' }}>
-                ROLLABLE (Wheels remounted; safe to relocate to H2)
+              <span style={{ color: 'var(--accent-emerald)', fontWeight: '700' }}>
+                ROLLABLE (Wheels remounted; certified safe to relocate to H2)
               </span>
             )}
           </div>
@@ -97,7 +102,7 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
                       padding: '5px 12px',
                       borderRadius: '4px',
                       fontSize: '11px',
-                      fontWeight: isActive ? '700' : '500',
+                      fontWeight: isActive ? '800' : '500',
                       background: isActive ? 'var(--accent-amber)' : '#1e293b',
                       color: isActive ? '#000' : 'var(--text-muted)',
                       border: isActive ? '1px solid #ffffff' : '1px solid transparent',
@@ -113,22 +118,86 @@ export const PhysicalStatePanel: React.FC<Props> = ({ scenario }) => {
               );
             })}
           </div>
-          <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            Holding Area H2 Capacity: <strong>{scenario.h2_available_stalls} / {scenario.h2_capacity} stalls available</strong>
+          <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+            Holding Area H2 Buffer:{' '}
+            <strong style={{ color: hasH2Capacity ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
+              {scenario.h2_available_stalls} of {scenario.h2_capacity} stalls available
+            </strong>
           </div>
         </div>
       </div>
 
-      {/* Invariants strip */}
+      {/* Pre-Solver Feasibility Checklist */}
+      <div
+        style={{
+          marginTop: '16px',
+          background: 'rgba(15, 23, 42, 0.5)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '8px',
+          padding: '12px 16px'
+        }}
+      >
+        <div style={{ fontSize: '12px', fontWeight: '800', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+          Pre-Solver Feasibility Filter (Prunes Search Space Before Optimization):
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', fontSize: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {!isImmobilized ? (
+              <CheckCircle2 size={16} style={{ color: 'var(--accent-emerald)', flexShrink: 0 }} />
+            ) : (
+              <XCircle size={16} style={{ color: 'var(--accent-rose)', flexShrink: 0 }} />
+            )}
+            <span>
+              <strong>Wheel Assembly:</strong> {!isImmobilized ? 'Mounted (Rollable)' : 'Detached (Cannot Roll)'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {hasSignoff ? (
+              <CheckCircle2 size={16} style={{ color: 'var(--accent-emerald)', flexShrink: 0 }} />
+            ) : (
+              <XCircle size={16} style={{ color: 'var(--accent-rose)', flexShrink: 0 }} />
+            )}
+            <span>
+              <strong>Technician Signoff:</strong> {hasSignoff ? 'Tech K1 Certified' : 'Not Recorded'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {hasH2Capacity ? (
+              <CheckCircle2 size={16} style={{ color: 'var(--accent-emerald)', flexShrink: 0 }} />
+            ) : (
+              <XCircle size={16} style={{ color: 'var(--accent-rose)', flexShrink: 0 }} />
+            )}
+            <span>
+              <strong>H2 Holding Capacity:</strong> {hasH2Capacity ? 'Stall Available' : 'No Free Stalls'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span
+              className="badge"
+              style={{
+                background: isRelocationEligible ? 'var(--badge-optimal)' : '#881337',
+                color: isRelocationEligible ? 'var(--badge-optimal-text)' : '#fda4af'
+              }}
+            >
+              {isRelocationEligible ? 'RELOCATION ELIGIBLE' : 'RELOCATION PRUNED (HOLD ONLY)'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Safety Invariants strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px', marginTop: '14px' }}>
         <div style={{ borderLeft: '3px solid var(--accent-cyan)', paddingLeft: '10px', fontSize: '11px', color: 'var(--text-secondary)' }}>
-          <strong style={{ color: 'var(--text-primary)' }}>Invariant CE-1 (Hoist Lock):</strong> Bay B4 is strictly single-capacity. No subsequent vehicle can be positioned on the hoist while an immobilized vehicle occupies it.
+          <strong style={{ color: 'var(--text-primary)' }}>Invariant CE-1 (Hoist Lock):</strong> Bay B4 is strictly single-capacity. No subsequent vehicle can enter the hoist while an immobilized vehicle occupies it.
         </div>
         <div style={{ borderLeft: '3px solid var(--accent-emerald)', paddingLeft: '10px', fontSize: '11px', color: 'var(--text-secondary)' }}>
           <strong style={{ color: 'var(--text-primary)' }}>Invariant CE-3 (Non-Instant Clearance):</strong> 10-min clearance transit ($k=2$) required before Bay B4 transitions from <code>CLEARANCE_PENDING</code> to <code>AVAILABLE</code>.
         </div>
         <div style={{ borderLeft: '3px solid var(--accent-rose)', paddingLeft: '10px', fontSize: '11px', color: 'var(--text-secondary)' }}>
-          <strong style={{ color: 'var(--text-primary)' }}>Invariant CE-7 (Promise Integrity):</strong> Customer promise times are immutable contractual commitments; lateness penalty cannot be disguised by rescheduling promises.
+          <strong style={{ color: 'var(--text-primary)' }}>Invariant CE-7 (Promise Integrity):</strong> Customer promise times are immutable contractual commitments; lateness penalty cannot be masked by postponing promises.
         </div>
       </div>
     </div>
