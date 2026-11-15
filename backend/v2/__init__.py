@@ -13,6 +13,13 @@ from backend.v2.baseline_a2_plus import (
     A2PlusDecision,
     A2PlusVerifierView
 )
+from backend.v2.benchmark_three_policy import (
+    run_three_policy_benchmark,
+    ThreePolicyBenchmarkResult,
+    PairedSeedRecord,
+    PolicyMetrics,
+    PairwiseComparisonStats
+)
 
 __all__ = [
     "solve_a2_plus_policy",
@@ -22,5 +29,10 @@ __all__ = [
     "a2_plus_to_proposal_adapter",
     "A2PlusCandidatePlan",
     "A2PlusDecision",
-    "A2PlusVerifierView"
+    "A2PlusVerifierView",
+    "run_three_policy_benchmark",
+    "ThreePolicyBenchmarkResult",
+    "PairedSeedRecord",
+    "PolicyMetrics",
+    "PairwiseComparisonStats"
 ]
