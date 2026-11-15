@@ -102,7 +102,7 @@ class Proposal(BaseModel):
     input_snapshot_version: int
     selected_source_id: Optional[str] = None
     selected_source_name: Optional[str] = None
-    selected_movement: str = "HOLD_ON_BAY"  # "HOLD_ON_BAY" or "RELOCATE_TO_H2"
+    selected_movement: Optional[str] = "HOLD_ON_BAY"  # "HOLD_ON_BAY" or "RELOCATE_TO_H2"
     
     # Critical timestamps & milestones
     b4_release_tick: int

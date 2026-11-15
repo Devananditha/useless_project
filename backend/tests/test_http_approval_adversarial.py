@@ -256,3 +256,63 @@ def test_http_6_double_approval_idempotency():
         if e["event_type"] == "PROPOSAL_COMMITTED" and e.get("details", {}).get("proposal_id") == prop_id
     ]
     assert len(commit_events) == 1
+
+
+def test_http_7_unsupported_movement_approval_rejected():
+    """
+    HTTP Test 7 — Unsupported movement rejection:
+    A proposal with an unsupported movement type (e.g. UNKNOWN_MOVEMENT)
+    must fail independent verification at commit time and be refused approval.
+    """
+    solve_resp = client.post("/api/solve", json={"scenario_id": "S-MATH-01", "compare_a2_p3": False})
+    assert solve_resp.status_code == 200
+    prop_id = solve_resp.json()["active_proposal"]["proposal_id"]
+
+    # Tamper with proposal to set an unsupported movement type
+    prop = store.get_proposal(prop_id)
+    prop.selected_movement = "UNKNOWN_MOVEMENT"
+    v_res = verify_proposal(prop, store.get_active_snapshot())
+    assert v_res.verification_status == VerificationStatus.REJECTED
+    assert "UNSUPPORTED_MOVEMENT_TYPE" in [v.violation_code for v in v_res.violations]
+    prop.verification_result = v_res.model_dump()
+    store.save_proposal(prop)
+
+    appr_resp = client.post(f"/api/proposals/{prop_id}/approve")
+    assert appr_resp.status_code == 200
+    res = appr_resp.json()
+
+    assert res["success"] is False
+    assert res["status"] in ("VERIFICATION_REJECTED", "REJECTED")
+    saved = store.get_proposal(prop_id)
+    assert saved.approval_status != ApprovalStatus.APPROVED
+
+
+def test_http_8_duplicate_interval_approval_rejected():
+    """
+    HTTP Test 8 — Duplicate interval rejection:
+    A proposal with duplicated mandatory intervals must fail independent verification
+    and cannot be approved.
+    """
+    solve_resp = client.post("/api/solve", json={"scenario_id": "S-MATH-01", "compare_a2_p3": False})
+    assert solve_resp.status_code == 200
+    prop_id = solve_resp.json()["active_proposal"]["proposal_id"]
+
+    # Tamper with proposal to add a duplicate installation interval
+    prop = store.get_proposal(prop_id)
+    inst = [iv for iv in prop.scheduled_intervals if "Part Installation" in iv.operation][0]
+    prop.scheduled_intervals.append(inst.model_copy())
+
+    v_res = verify_proposal(prop, store.get_active_snapshot())
+    assert v_res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_RO1042_INSTALL_INTERVAL" in [v.violation_code for v in v_res.violations]
+    prop.verification_result = v_res.model_dump()
+    store.save_proposal(prop)
+
+    appr_resp = client.post(f"/api/proposals/{prop_id}/approve")
+    assert appr_resp.status_code == 200
+    res = appr_resp.json()
+
+    assert res["success"] is False
+    assert res["status"] in ("VERIFICATION_REJECTED", "REJECTED")
+    saved = store.get_proposal(prop_id)
+    assert saved.approval_status != ApprovalStatus.APPROVED

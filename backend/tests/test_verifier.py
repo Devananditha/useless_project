@@ -529,3 +529,252 @@ def test_mutation_24_s_math_02_ro1051_before_tech_k2_available():
     res = verify_proposal(corrupt_prop, snap)
     assert res.verification_status == VerificationStatus.REJECTED
     assert "TECHNICIAN_OVERLAP" in [v.violation_code for v in res.violations]
+
+
+# -----------------------------------------------------------------------------
+# 4. Stage 2.2.1 Unknown-Action & Duplicate-Event Adversarial Mutations
+# -----------------------------------------------------------------------------
+
+def test_mutation_25_unsupported_movement_unknown_movement():
+    """Proposal with UNKNOWN_MOVEMENT must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.selected_movement = "UNKNOWN_MOVEMENT"
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "UNSUPPORTED_MOVEMENT_TYPE" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_26_unsupported_movement_empty_string():
+    """Proposal with empty movement string must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.selected_movement = ""
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "UNSUPPORTED_MOVEMENT_TYPE" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_27_unsupported_movement_null():
+    """Proposal with None/null movement must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.selected_movement = None
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "UNSUPPORTED_MOVEMENT_TYPE" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_28_unsupported_movement_arbitrary_string():
+    """Proposal with arbitrary movement string must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.selected_movement = "CRANE_LIFT_EXTERNAL"
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "UNSUPPORTED_MOVEMENT_TYPE" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_29_unsupported_movement_otherwise_valid_proposal():
+    """Proposal with 100% valid source, intervals, and objective but invalid movement must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.selected_movement = "TELEPORT_TO_STAGING"
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "UNSUPPORTED_MOVEMENT_TYPE" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_30_duplicate_ro1042_installation():
+    """Duplicate RO-1042 installation intervals must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    # Duplicate the installation interval
+    inst = [iv for iv in corrupt_prop.scheduled_intervals if "Part Installation" in iv.operation][0]
+    corrupt_prop.scheduled_intervals.append(inst.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_RO1042_INSTALL_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_31_duplicate_ro1042_clearance():
+    """Duplicate RO-1042 clearance intervals must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    clr = [iv for iv in corrupt_prop.scheduled_intervals if "Clearance" in iv.operation][0]
+    corrupt_prop.scheduled_intervals.append(clr.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_RO1042_CLEARANCE_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_32_duplicate_ro1051_service():
+    """Duplicate RO-1051 service intervals must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    srv = [iv for iv in corrupt_prop.scheduled_intervals if iv.entity_id == "RO-1051"][0]
+    corrupt_prop.scheduled_intervals.append(srv.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_RO1051_SERVICE_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_33_duplicate_outbound_transit():
+    """Duplicate outbound transit intervals must be REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    out = [iv for iv in corrupt_prop.scheduled_intervals if "Transit from Bay B4" in iv.operation or "to Holding H2" in iv.operation][0]
+    corrupt_prop.scheduled_intervals.append(out.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_OUTBOUND_TRANSIT_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_34_duplicate_h2_holding():
+    """Duplicate H2 holding staging intervals must be REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    hold = [iv for iv in corrupt_prop.scheduled_intervals if iv.entity_id == "H2"][0]
+    corrupt_prop.scheduled_intervals.append(hold.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_H2_HOLDING_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_35_duplicate_return_transit():
+    """Duplicate return transit intervals must be REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    ret = [iv for iv in corrupt_prop.scheduled_intervals if "Return Transit" in iv.operation or "Return" in iv.operation][0]
+    corrupt_prop.scheduled_intervals.append(ret.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_RETURN_TRANSIT_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_36_duplicate_final_clearance():
+    """Duplicate final clearance intervals must be REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    clr = [iv for iv in corrupt_prop.scheduled_intervals if iv.entity_id == "RO-1042" and "Clearance" in iv.operation][0]
+    corrupt_prop.scheduled_intervals.append(clr.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_FINAL_CLEARANCE_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_37_wrong_entity_type_for_installation():
+    """Installation interval with invalid entity_type (e.g. 'TECH' instead of 'JOB') must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if "Part Installation" in iv.operation:
+            new_intervals.append(iv.model_copy(update={"entity_type": "TECH"}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "INVALID_ENTITY_TYPE" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_38_wrong_entity_identity_for_transit():
+    """Transit interval with invalid entity_id (e.g. 'RO-9999' instead of 'RO-1042') must be REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if "Transit from Bay B4" in iv.operation or "to Holding H2" in iv.operation:
+            new_intervals.append(iv.model_copy(update={"entity_id": "RO-9999"}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "INVALID_ENTITY_ID" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_39_zero_duration_interval():
+    """Interval with end_tick == start_tick (zero duration) must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if "Part Installation" in iv.operation:
+            new_intervals.append(iv.model_copy(update={"start_tick": 27, "end_tick": 27}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "INVALID_INTERVAL_DURATION" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_40_negative_duration_interval():
+    """Interval with end_tick < start_tick (negative duration) must be REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if "Part Installation" in iv.operation:
+            new_intervals.append(iv.model_copy(update={"start_tick": 35, "end_tick": 30}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "INVALID_INTERVAL_DURATION" in [v.violation_code for v in res.violations]

@@ -87,7 +87,7 @@ def compute_proposal_digest(proposal: Proposal) -> str:
         "input_snapshot_version": int(proposal.input_snapshot_version),
         "selected_source_id": str(proposal.selected_source_id) if proposal.selected_source_id is not None else None,
         "selected_source_name": str(proposal.selected_source_name) if proposal.selected_source_name is not None else None,
-        "selected_movement": str(proposal.selected_movement),
+        "selected_movement": str(proposal.selected_movement) if proposal.selected_movement is not None else None,
         "b4_release_tick": int(proposal.b4_release_tick),
         "ro1042_finish_tick": int(proposal.ro1042_finish_tick),
         "ro1051_finish_tick": int(proposal.ro1051_finish_tick),
@@ -160,10 +160,36 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
         )
 
     # -------------------------------------------------------------------------
-    # Invariant 3: Critical & Mandatory Evidence Completeness
+    # Invariant 3: Supported Movement Action Validation
     # -------------------------------------------------------------------------
-    inv_name = "INV-EVIDENCE-COMPLETE: Critical & Mandatory Schedule Events Present"
-    checked_invariants.append(inv_name)
+    inv_movement = "INV-MOVEMENT-ACTION: Valid Supported Movement Action"
+    checked_invariants.append(inv_movement)
+    SUPPORTED_MOVEMENTS = {"HOLD_ON_BAY", "RELOCATE_TO_H2"}
+
+    if not proposal.selected_movement or proposal.selected_movement not in SUPPORTED_MOVEMENTS:
+        violations.append(VerificationViolation(
+            violation_code="UNSUPPORTED_MOVEMENT_TYPE",
+            description=f"Proposal specifies unsupported or invalid movement action '{proposal.selected_movement}'. Supported actions are: {sorted(list(SUPPORTED_MOVEMENTS))}.",
+            entity_id=str(proposal.selected_movement)
+        ))
+        return VerificationResult(
+            verification_status=VerificationStatus.REJECTED,
+            proposal_id=proposal.proposal_id,
+            scenario_id=snapshot.scenario_id,
+            snapshot_version=snapshot.snapshot_version,
+            proposal_digest=digest,
+            certificate_id=cert_id,
+            violations=violations,
+            checked_invariants=checked_invariants,
+            skipped_checks=skipped_checks,
+            verification_summary=f"REJECTED: Unsupported movement action '{proposal.selected_movement}'."
+        )
+
+    # -------------------------------------------------------------------------
+    # Invariant 4: Critical & Mandatory Evidence Completeness & Cardinality
+    # -------------------------------------------------------------------------
+    inv_evidence = "INV-EVIDENCE-COMPLETE: Critical & Mandatory Schedule Events Present"
+    checked_invariants.append(inv_evidence)
     if not proposal.selected_source_id or not proposal.scheduled_intervals:
         violations.append(VerificationViolation(
             violation_code="MISSING_CRITICAL_EVIDENCE",
@@ -183,62 +209,192 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             verification_summary="INSUFFICIENT_EVIDENCE: Critical proposal evidence missing."
         )
 
-    # Semantic classification of emitted schedule intervals
-    ro1042_install = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "RO-1042" and iv.entity_type == "JOB" and (
-            "Part Installation" in iv.operation or "Install" in iv.operation or "Installation" in iv.operation
-        )
-    ]
-    ro1042_clearance = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "RO-1042" and ("Clearance" in iv.operation or "clearance" in iv.operation.lower())
-    ]
-    ro1051_service = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "RO-1051" and iv.entity_type == "JOB" and "Clearance" not in iv.operation
-    ]
-    outbound_transit = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and (
-            "Holding H2" in iv.operation or "to Holding H2" in iv.operation or "Transit from Bay B4" in iv.operation
-        )
-    ]
-    h2_holding = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "H2" and iv.entity_type == "HOLDING"
-    ]
-    ro1051_clearance = [
-        iv for iv in proposal.scheduled_intervals
-        if ("Clearance" in iv.operation and ("RO-1051" in iv.operation or iv.entity_id == "B4"))
-    ]
-    return_transit = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and (
-            "Return" in iv.operation or "H2 to Bay B4" in iv.operation
-        )
-    ]
+    # Basic data type and duration verification for all emitted intervals
+    for iv in proposal.scheduled_intervals:
+        if not isinstance(iv.start_tick, int) or isinstance(iv.start_tick, bool) or not isinstance(iv.end_tick, int) or isinstance(iv.end_tick, bool):
+            violations.append(VerificationViolation(
+                violation_code="INVALID_INTERVAL_DATA_TYPE",
+                description=f"Interval '{iv.operation}' contains non-integer tick bounds (start={iv.start_tick}, end={iv.end_tick}).",
+                entity_id=iv.entity_id
+            ))
+        elif iv.end_tick <= iv.start_tick:
+            violations.append(VerificationViolation(
+                violation_code="INVALID_INTERVAL_DURATION",
+                description=f"Interval '{iv.operation}' has invalid non-positive duration (start={iv.start_tick}, end={iv.end_tick}, duration={iv.end_tick - iv.start_tick}).",
+                entity_id=iv.entity_id
+            ))
 
-    # Explicit mandatory event presence checks per movement mode
+    # Event matchers and exact cardinality tracking
+    ro1042_install: List[ScheduledInterval] = []
+    ro1042_clearance: List[ScheduledInterval] = []
+    ro1051_service: List[ScheduledInterval] = []
+    outbound_transit: List[ScheduledInterval] = []
+    h2_holding: List[ScheduledInterval] = []
+    ro1051_clearance: List[ScheduledInterval] = []
+    return_transit: List[ScheduledInterval] = []
+
+    for iv in proposal.scheduled_intervals:
+        op = iv.operation
+        # 1. RO-1042 installation
+        if "Part Installation" in op or "Install" in op or "Installation" in op:
+            if iv.entity_type != "JOB":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"RO-1042 installation interval has entity_type '{iv.entity_type}', expected 'JOB'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "RO-1042":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"RO-1042 installation interval has entity_id '{iv.entity_id}', expected 'RO-1042'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                ro1042_install.append(iv)
+
+        # 2. RO-1042 bay clearance (hold mode or final clearance in relocate mode)
+        elif ("Clearance" in op or "clearance" in op.lower()) and "RO-1051" not in op and iv.entity_id != "B4":
+            if iv.entity_type != "JOB":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"RO-1042 clearance interval has entity_type '{iv.entity_type}', expected 'JOB'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "RO-1042":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"RO-1042 clearance interval has entity_id '{iv.entity_id}', expected 'RO-1042'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                ro1042_clearance.append(iv)
+
+        # 3. RO-1051 service
+        elif ("RO-1051" in op or "ADAS" in op or iv.entity_id == "RO-1051") and "Clearance" not in op and "Transit" not in op:
+            if iv.entity_type != "JOB":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"RO-1051 service interval has entity_type '{iv.entity_type}', expected 'JOB'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "RO-1051":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"RO-1051 service interval has entity_id '{iv.entity_id}', expected 'RO-1051'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                ro1051_service.append(iv)
+
+        # 4. Outbound transit to H2
+        elif "Transit from Bay B4" in op or "to Holding H2" in op or ("Transit" in op and "Holding" in op and "Return" not in op):
+            if iv.entity_type != "TRANSIT":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"Outbound transit interval has entity_type '{iv.entity_type}', expected 'TRANSIT'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "RO-1042":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"Outbound transit interval has entity_id '{iv.entity_id}', expected 'RO-1042'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                outbound_transit.append(iv)
+
+        # 5. H2 holding staging
+        elif "Staged in Holding" in op or ("Holding H2" in op and "Transit" not in op) or (iv.entity_id == "H2" and iv.entity_type == "HOLDING"):
+            if iv.entity_type != "HOLDING":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"H2 holding interval has entity_type '{iv.entity_type}', expected 'HOLDING'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "H2":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"H2 holding interval has entity_id '{iv.entity_id}', expected 'H2'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                h2_holding.append(iv)
+
+        # 6. RO-1051 post-service clearance
+        elif "Clearance" in op and ("RO-1051" in op or iv.entity_id == "B4") and "Final Verification" not in op:
+            if iv.entity_type != "BAY":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"RO-1051 clearance interval has entity_type '{iv.entity_type}', expected 'BAY'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "B4":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"RO-1051 clearance interval has entity_id '{iv.entity_id}', expected 'B4'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                ro1051_clearance.append(iv)
+
+        # 7. Return transit from H2
+        elif "Return Transit" in op or "Return" in op or "H2 to Bay B4" in op:
+            if iv.entity_type != "TRANSIT":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_TYPE",
+                    description=f"Return transit interval has entity_type '{iv.entity_type}', expected 'TRANSIT'.",
+                    entity_id=iv.entity_id
+                ))
+            elif iv.entity_id != "RO-1042":
+                violations.append(VerificationViolation(
+                    violation_code="INVALID_ENTITY_ID",
+                    description=f"Return transit interval has entity_id '{iv.entity_id}', expected 'RO-1042'.",
+                    entity_id=iv.entity_id
+                ))
+            else:
+                return_transit.append(iv)
+
+    # Explicit mandatory event presence and exact cardinality checks per movement mode
     if proposal.selected_movement == "HOLD_ON_BAY":
-        if not ro1042_install:
+        if len(ro1042_install) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RO1042_INSTALL_INTERVAL",
                 description="Required RO-1042 part installation interval is missing from proposal schedule.",
                 entity_id="RO-1042"
             ))
-        if not ro1042_clearance:
+        elif len(ro1042_install) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RO1042_INSTALL_INTERVAL",
+                description=f"Duplicate RO-1042 installation intervals detected ({len(ro1042_install)} found, expected exactly 1).",
+                entity_id="RO-1042"
+            ))
+
+        if len(ro1042_clearance) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RO1042_CLEARANCE_INTERVAL",
                 description="Required RO-1042 bay clearance interval is missing from proposal schedule.",
                 entity_id="RO-1042"
             ))
-        if not ro1051_service:
+        elif len(ro1042_clearance) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RO1042_CLEARANCE_INTERVAL",
+                description=f"Duplicate RO-1042 clearance intervals detected ({len(ro1042_clearance)} found, expected exactly 1).",
+                entity_id="RO-1042"
+            ))
+
+        if len(ro1051_service) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RO1051_SERVICE_INTERVAL",
                 description="Required RO-1051 service interval is missing from proposal schedule.",
                 entity_id="RO-1051"
             ))
+        elif len(ro1051_service) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RO1051_SERVICE_INTERVAL",
+                description=f"Duplicate RO-1051 service intervals detected ({len(ro1051_service)} found, expected exactly 1).",
+                entity_id="RO-1051"
+            ))
+
     elif proposal.selected_movement == "RELOCATE_TO_H2":
         # Always check physical safety for relocation attempts regardless of intervals present
         ro = snapshot.ro1042
@@ -264,57 +420,115 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
                 entity_id="H2"
             ))
 
-        if not outbound_transit:
+        if len(outbound_transit) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_OUTBOUND_TRANSIT_INTERVAL",
                 description="Required outbound relocation transit interval to H2 is missing from proposal schedule.",
                 entity_id="RO-1042"
             ))
-        if not h2_holding:
+        elif len(outbound_transit) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_OUTBOUND_TRANSIT_INTERVAL",
+                description=f"Duplicate outbound transit intervals detected ({len(outbound_transit)} found, expected exactly 1).",
+                entity_id="RO-1042"
+            ))
+
+        if len(h2_holding) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_H2_HOLDING_INTERVAL",
                 description="Required H2 holding staging interval is missing from proposal schedule.",
                 entity_id="H2"
             ))
-        if not ro1051_service:
+        elif len(h2_holding) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_H2_HOLDING_INTERVAL",
+                description=f"Duplicate H2 holding intervals detected ({len(h2_holding)} found, expected exactly 1).",
+                entity_id="H2"
+            ))
+
+        if len(ro1051_service) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RO1051_SERVICE_INTERVAL",
                 description="Required RO-1051 fleet service interval is missing from proposal schedule.",
                 entity_id="RO-1051"
             ))
-        if not ro1051_clearance:
+        elif len(ro1051_service) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RO1051_SERVICE_INTERVAL",
+                description=f"Duplicate RO-1051 service intervals detected ({len(ro1051_service)} found, expected exactly 1).",
+                entity_id="RO-1051"
+            ))
+
+        if len(ro1051_clearance) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RO1051_CLEARANCE_INTERVAL",
                 description="Required RO-1051 post-service clearance interval is missing from proposal schedule.",
                 entity_id="B4"
             ))
-        if not return_transit:
+        elif len(ro1051_clearance) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RO1051_CLEARANCE_INTERVAL",
+                description=f"Duplicate RO-1051 post-service clearance intervals detected ({len(ro1051_clearance)} found, expected exactly 1).",
+                entity_id="B4"
+            ))
+
+        if len(return_transit) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RETURN_TRANSIT_INTERVAL",
                 description="Required return transit interval from H2 to Bay B4 is missing from proposal schedule.",
                 entity_id="RO-1042"
             ))
-        if not ro1042_install:
+        elif len(return_transit) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RETURN_TRANSIT_INTERVAL",
+                description=f"Duplicate return transit intervals detected ({len(return_transit)} found, expected exactly 1).",
+                entity_id="RO-1042"
+            ))
+
+        if len(ro1042_install) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_RO1042_INSTALL_INTERVAL",
                 description="Required RO-1042 installation interval upon return is missing from proposal schedule.",
                 entity_id="RO-1042"
             ))
-        if not ro1042_clearance:
+        elif len(ro1042_install) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_RO1042_INSTALL_INTERVAL",
+                description=f"Duplicate RO-1042 installation intervals detected ({len(ro1042_install)} found, expected exactly 1).",
+                entity_id="RO-1042"
+            ))
+
+        if len(ro1042_clearance) == 0:
             violations.append(VerificationViolation(
                 violation_code="MISSING_FINAL_CLEARANCE_INTERVAL",
                 description="Required final RO-1042 clearance interval is missing from proposal schedule.",
                 entity_id="RO-1042"
             ))
+        elif len(ro1042_clearance) > 1:
+            violations.append(VerificationViolation(
+                violation_code="DUPLICATE_FINAL_CLEARANCE_INTERVAL",
+                description=f"Duplicate final RO-1042 clearance intervals detected ({len(ro1042_clearance)} found, expected exactly 1).",
+                entity_id="RO-1042"
+            ))
 
-    # Fail closed on missing mandatory schedule evidence if no other physical safety violation occurred
-    missing_codes = [v.violation_code for v in violations if v.violation_code.startswith("MISSING_")]
-    has_rejection_fault = any(
-        not v.violation_code.startswith("MISSING_") for v in violations
+    # Fail closed on missing, duplicate, malformed evidence or physical safety violations
+    has_fault = any(
+        v.violation_code.startswith("MISSING_") or
+        v.violation_code.startswith("DUPLICATE_") or
+        v.violation_code.startswith("INVALID_") or
+        v.violation_code.startswith("UNSAFE_") or
+        v.violation_code in {
+            "UNSUPPORTED_MOVEMENT_TYPE",
+            "MISSING_TECHNICIAN_SIGNOFF",
+            "HOLDING_CAPACITY_EXCEEDED"
+        }
+        for v in violations
     )
-    if missing_codes:
+    if has_fault:
+        has_rejection_fault = any(not v.violation_code.startswith("MISSING_") for v in violations)
         final_status = VerificationStatus.REJECTED if has_rejection_fault else VerificationStatus.INSUFFICIENT_EVIDENCE
         summary_prefix = "REJECTED" if has_rejection_fault else "INSUFFICIENT_EVIDENCE"
+        fault_codes = [v.violation_code for v in violations]
         return VerificationResult(
             verification_status=final_status,
             proposal_id=proposal.proposal_id,
@@ -325,7 +539,7 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             violations=violations,
             checked_invariants=checked_invariants,
             skipped_checks=skipped_checks,
-            verification_summary=f"{summary_prefix}: Proposal failed validation (missing schedule evidence: {missing_codes})."
+            verification_summary=f"{summary_prefix}: Proposal failed validation (evidence/cardinality faults: {fault_codes})."
         )
 
     # -------------------------------------------------------------------------
