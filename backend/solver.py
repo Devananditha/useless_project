@@ -147,9 +147,12 @@ def solve_recovery_problem(
     reloc_out_dur = snapshot.relocation_duration_ticks
     b4_free_reloc = current_t + reloc_out_dur
 
-    # RO-1051 can start on B4 at b4_free_reloc
+    # RO-1051 can start on B4 at b4_free_reloc, constrained by technician availability
     ro1051_start_reloc = model.NewIntVar(current_t, H + 20, "ro1051_start_reloc")
-    model.Add(ro1051_start_reloc == b4_free_reloc)
+    if tech_avail is not None:
+        model.AddMaxEquality(ro1051_start_reloc, [model.NewConstant(b4_free_reloc), model.NewConstant(int(tech_avail))])
+    else:
+        model.Add(ro1051_start_reloc == b4_free_reloc)
     ro1051_service_end_reloc = model.NewIntVar(0, H + 40, "ro1051_service_end_reloc")
     model.Add(ro1051_service_end_reloc == ro1051_start_reloc + snapshot.ro1051.service_duration_ticks)
     ro1051_comp_reloc = ro1051_service_end_reloc  # Milestone 1: on-hoist service completion

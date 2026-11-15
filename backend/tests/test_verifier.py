@@ -826,3 +826,94 @@ def test_technician_availability_explicit_zero_not_overridden_by_fallback():
     res_none = verify_proposal(prop, snap_none)
     assert res_none.verification_status == VerificationStatus.REJECTED
     assert "TECHNICIAN_OVERLAP" in [v.violation_code for v in res_none.violations]
+
+
+def test_relocation_scheduling_enforces_technician_availability():
+    """
+    Stage 2.2.3: Prove that CP-SAT relocation scheduling respects technician availability.
+    When tech_avail = 60, RO-1051 start on B4 must be delayed to max(b4_free_reloc, 60),
+    and the independent verifier must certify the proposal without TECHNICIAN_OVERLAP.
+    """
+    snap = get_rollable_s_math_01_fixture(version=14)
+    snap.technician_k2_available_tick = 60
+    # Make part ready at t=55 and promise at 110 so relocation is strictly optimal over hold
+    snap.sources[0].usable_time_ticks = 55
+    snap.ro1042.promise_ticks = 110
+
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+
+    # 1. Assert relocation is chosen
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+
+    # 2. Assert RO-1051 starts no earlier than tick 60
+    ro1051_intervals = [
+        iv for iv in prop.scheduled_intervals
+        if iv.entity_id == "RO-1051" and "ADAS Calibration" in iv.operation
+    ]
+    assert len(ro1051_intervals) == 1
+    srv_1051 = ro1051_intervals[0]
+    assert srv_1051.start_tick >= 60
+    assert srv_1051.start_tick == 60
+    assert srv_1051.end_tick == 60 + snap.ro1051.service_duration_ticks
+
+    # 3. Post-service clearance and return sequence physically satisfied
+    clr_1051_list = [
+        iv for iv in prop.scheduled_intervals
+        if "Clearance" in iv.operation and ("RO-1051" in iv.operation or iv.entity_id == "B4")
+    ]
+    assert len(clr_1051_list) == 1
+    clr_1051 = clr_1051_list[0]
+    assert clr_1051.start_tick == srv_1051.end_tick
+    assert clr_1051.end_tick >= clr_1051.start_tick + snap.clearance_duration_ticks
+
+    ret_list = [
+        iv for iv in prop.scheduled_intervals
+        if iv.entity_id == "RO-1042" and "Return Transit" in iv.operation
+    ]
+    assert len(ret_list) == 1
+    ret = ret_list[0]
+    assert ret.start_tick >= clr_1051.end_tick
+    assert ret.end_tick == ret.start_tick + snap.relocation_duration_ticks
+
+    inst_list = [
+        iv for iv in prop.scheduled_intervals
+        if iv.entity_id == "RO-1042" and "Part Installation" in iv.operation
+    ]
+    assert len(inst_list) == 1
+    inst = inst_list[0]
+    assert inst.start_tick == ret.end_tick
+    assert inst.end_tick == inst.start_tick + snap.ro1042.service_duration_ticks
+
+    # 4. Independent verifier certification
+    res = verify_proposal(prop, snap)
+    assert res.verification_status == VerificationStatus.VERIFIED
+    violation_codes = [v.violation_code for v in res.violations]
+    assert "TECHNICIAN_OVERLAP" not in violation_codes
+    assert len(res.violations) == 0
+
+
+def test_relocation_scheduling_unconstrained_technician_timing_unchanged():
+    """
+    Stage 2.2.3: Control test proving that when technician availability is None,
+    original relocation timing is preserved (RO-1051 starts at b4_free_reloc = 24).
+    """
+    snap = get_rollable_s_math_01_fixture(version=14)
+    snap.technician_k2_available_tick = None
+    snap.ro1051.technician_available_tick = None
+
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    ro1051_intervals = [
+        iv for iv in prop.scheduled_intervals
+        if iv.entity_id == "RO-1051" and "ADAS Calibration" in iv.operation
+    ]
+    assert len(ro1051_intervals) == 1
+    srv_1051 = ro1051_intervals[0]
+    # Starts immediately upon outbound transit completion (21 + 3 = 24)
+    assert srv_1051.start_tick == 24
+    assert srv_1051.end_tick == 48
+
+    res = verify_proposal(prop, snap)
+    assert res.verification_status == VerificationStatus.VERIFIED
+    assert len(res.violations) == 0
