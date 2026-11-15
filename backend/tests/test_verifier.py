@@ -778,3 +778,51 @@ def test_mutation_40_negative_duration_interval():
     res = verify_proposal(corrupt_prop, snap)
     assert res.verification_status == VerificationStatus.REJECTED
     assert "INVALID_INTERVAL_DURATION" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_41_duplicate_ro1051_clearance_interval():
+    """Duplicate RO-1051 post-service clearance interval in relocation scenario must be REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    clr = [
+        iv for iv in corrupt_prop.scheduled_intervals
+        if "Clearance" in iv.operation and ("RO-1051" in iv.operation or iv.entity_id == "B4")
+    ][0]
+    corrupt_prop.scheduled_intervals.append(clr.model_copy())
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "DUPLICATE_RO1051_CLEARANCE_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_technician_availability_explicit_zero_not_overridden_by_fallback():
+    """
+    Stage 2.2.2: Prove that an explicit zero in technician_k2_available_tick is
+    preserved and is NOT replaced by ro1051.technician_available_tick fallback.
+    """
+    snap = get_canonical_s_math_01_fixture(version=14)
+    # Set explicit 0 on primary, and 60 on fallback
+    snap.technician_k2_available_tick = 0
+    snap.ro1051.technician_available_tick = 60
+    
+    # 1. Solver execution: RO-1051 should start at tick 41 (when B4 clears), NOT delayed until tick 60
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    srv = [iv for iv in prop.scheduled_intervals if iv.entity_id == "RO-1051"][0]
+    assert srv.start_tick == 41  # Starts at 41 because tech_avail is 0, not 60
+    
+    # 2. Verifier execution: Verifier with explicit 0 accepts tick 41 as valid
+    res_zero = verify_proposal(prop, snap)
+    assert res_zero.verification_status == VerificationStatus.VERIFIED
+    assert len([v for v in res_zero.violations if v.violation_code == "TECHNICIAN_OVERLAP"]) == 0
+    
+    # 3. Fallback verification: When primary field is None, it falls back to 60, rejecting start at 41
+    snap_none = snap.model_copy(deep=True)
+    snap_none.technician_k2_available_tick = None
+    snap_none.ro1051.technician_available_tick = 60
+    
+    res_none = verify_proposal(prop, snap_none)
+    assert res_none.verification_status == VerificationStatus.REJECTED
+    assert "TECHNICIAN_OVERLAP" in [v.violation_code for v in res_none.violations]

@@ -128,7 +128,11 @@ def solve_recovery_problem(
     b4_release_hold = ro1042_comp_hold
 
     # RO-1051 start on hold = max(b4_release_hold, tech_avail)
-    tech_avail = snapshot.technician_k2_available_tick or snapshot.ro1051.technician_available_tick
+    tech_avail = (
+        snapshot.technician_k2_available_tick
+        if snapshot.technician_k2_available_tick is not None
+        else snapshot.ro1051.technician_available_tick
+    )
     ro1051_start_hold = model.NewIntVar(current_t, H + 20, "ro1051_start_hold")
     if tech_avail is not None:
         model.AddMaxEquality(ro1051_start_hold, [b4_release_hold, model.NewConstant(int(tech_avail))])

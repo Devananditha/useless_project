@@ -695,7 +695,11 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             ))
 
         # 10. Technician constraint
-        tech_avail = snapshot.technician_k2_available_tick or snapshot.ro1051.technician_available_tick
+        tech_avail = (
+            snapshot.technician_k2_available_tick
+            if snapshot.technician_k2_available_tick is not None
+            else snapshot.ro1051.technician_available_tick
+        )
         if tech_avail is not None:
             checked_invariants.append("INV-TECH-CONSTRAINTS: Technician K2 Availability Constraint")
             if srv.start_tick < tech_avail:
@@ -789,7 +793,11 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             ))
 
         # Technician check
-        tech_avail = snapshot.technician_k2_available_tick or snapshot.ro1051.technician_available_tick
+        tech_avail = (
+            snapshot.technician_k2_available_tick
+            if snapshot.technician_k2_available_tick is not None
+            else snapshot.ro1051.technician_available_tick
+        )
         if tech_avail is not None:
             checked_invariants.append("INV-TECH-CONSTRAINTS: Technician K2 Availability Constraint")
             if srv.start_tick < tech_avail:
