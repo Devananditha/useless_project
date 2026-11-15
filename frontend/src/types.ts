@@ -15,7 +15,29 @@ export type BayState = 'OCCUPIED' | 'CLEARANCE_PENDING' | 'AVAILABLE_FOR_ALLOCAT
 
 export type SolverStatus = 'OPTIMAL' | 'FEASIBLE' | 'INFEASIBLE' | 'UNKNOWN' | 'MODEL_INVALID';
 
-export type ApprovalStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'STALE_SNAPSHOT';
+export type ApprovalStatus =
+  | 'PENDING_APPROVAL'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'STALE_SNAPSHOT'
+  | 'INSUFFICIENT_EVIDENCE';
+
+export interface VerificationViolation {
+  violation_code: string;
+  invariant_id: string;
+  description: string;
+  details?: Record<string, any>;
+}
+
+export interface VerificationResult {
+  certificate_id: string;
+  proposal_id: string;
+  verification_status: 'VERIFIED' | 'REJECTED' | 'INSUFFICIENT_EVIDENCE';
+  proposal_digest: string;
+  checked_invariants: string[];
+  violations: VerificationViolation[];
+  verification_summary: string;
+}
 
 export interface PartSource {
   source_id: string;
@@ -87,6 +109,7 @@ export interface Proposal {
   rejected_options: RejectedOption[];
   scheduled_intervals: ScheduledInterval[];
   approval_status: ApprovalStatus;
+  verification_result?: VerificationResult | null;
 }
 
 export interface PolicyComparisonResult {
@@ -152,6 +175,7 @@ export interface ApprovalResponse {
   new_comparison?: PolicyComparisonResult;
   requires_human_approval: boolean;
   current_snapshot?: ScenarioSnapshot;
+  violations?: VerificationViolation[];
 }
 
 export interface BenchmarkRecord {

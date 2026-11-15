@@ -54,13 +54,13 @@ def validate_relocation_feasibility(snapshot: ScenarioSnapshot) -> Tuple[bool, L
     rejections = []
     ro = snapshot.ro1042
 
-    # Check vehicle physical state
-    if ro.current_vehicle_state != VehicleState.SAFE_TO_RELOCATE:
+    # Check vehicle physical state and explicit rollability
+    if not ro.is_rollable or ro.current_vehicle_state != VehicleState.SAFE_TO_RELOCATE:
         rejections.append(RejectedOption(
             candidate_id="RELOCATE_TO_H2",
             reason_code="VEHICLE_NOT_SAFE_TO_MOVE",
             description=(
-                f"Vehicle is in state '{ro.current_vehicle_state.value}'. "
+                f"Vehicle is in state '{ro.current_vehicle_state.value}' (is_rollable={ro.is_rollable}). "
                 "Movement is strictly blocked until mechanical reassembly is complete "
                 "and certified technician sign-off is logged (Invariant CE-1)."
             )

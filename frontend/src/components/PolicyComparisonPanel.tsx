@@ -148,6 +148,56 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
             <span className="badge" style={{ background: '#1e293b', color: '#94a3b8' }}>{baseline_a2.selected_movement}</span>
           </div>
         </div>
+
+        {/* A2 Verification Certificate Badge */}
+        {baseline_a2.verification_result && (
+          <div
+            style={{
+              marginTop: '12px',
+              background:
+                baseline_a2.verification_result.verification_status === 'VERIFIED'
+                  ? 'rgba(16, 185, 129, 0.08)'
+                  : baseline_a2.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                  ? 'rgba(245, 158, 11, 0.08)'
+                  : 'rgba(239, 68, 68, 0.08)',
+              border: `1px solid ${
+                baseline_a2.verification_result.verification_status === 'VERIFIED'
+                  ? 'rgba(16, 185, 129, 0.35)'
+                  : baseline_a2.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                  ? 'rgba(245, 158, 11, 0.35)'
+                  : 'rgba(239, 68, 68, 0.35)'
+              }`,
+              borderRadius: '6px',
+              padding: '8px 12px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                Independent Verifier
+              </div>
+              <span
+                className="badge"
+                style={{
+                  background:
+                    baseline_a2.verification_result.verification_status === 'VERIFIED'
+                      ? 'var(--badge-optimal)'
+                      : 'rgba(239, 68, 68, 0.2)',
+                  color:
+                    baseline_a2.verification_result.verification_status === 'VERIFIED'
+                      ? 'var(--badge-optimal-text)'
+                      : 'var(--accent-rose)',
+                  fontSize: '9px',
+                  fontWeight: '800'
+                }}
+              >
+                {baseline_a2.verification_result.verification_status}
+              </span>
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px', fontFamily: 'monospace' }}>
+              Cert: {baseline_a2.verification_result.certificate_id}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* P3 Joint Optimization Card */}
@@ -206,6 +256,94 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
             ))}
           </ul>
         </div>
+
+        {/* Verification Certificate */}
+        {joint_p3.verification_result && (
+          <div
+            style={{
+              marginTop: '12px',
+              background:
+                joint_p3.verification_result.verification_status === 'VERIFIED'
+                  ? 'rgba(16, 185, 129, 0.08)'
+                  : joint_p3.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                  ? 'rgba(245, 158, 11, 0.08)'
+                  : 'rgba(239, 68, 68, 0.08)',
+              border: `1px solid ${
+                joint_p3.verification_result.verification_status === 'VERIFIED'
+                  ? 'rgba(16, 185, 129, 0.35)'
+                  : joint_p3.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                  ? 'rgba(245, 158, 11, 0.35)'
+                  : 'rgba(239, 68, 68, 0.35)'
+              }`,
+              borderRadius: '6px',
+              padding: '10px 14px'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <div style={{ fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                Independent Verifier (Commit-Time Revalidation)
+              </div>
+              <span
+                className="badge"
+                style={{
+                  background:
+                    joint_p3.verification_result.verification_status === 'VERIFIED'
+                      ? 'var(--badge-optimal)'
+                      : joint_p3.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                      ? 'rgba(245, 158, 11, 0.2)'
+                      : 'rgba(239, 68, 68, 0.2)',
+                  color:
+                    joint_p3.verification_result.verification_status === 'VERIFIED'
+                      ? 'var(--badge-optimal-text)'
+                      : joint_p3.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                      ? 'var(--accent-amber)'
+                      : 'var(--accent-rose)',
+                  fontSize: '10px',
+                  fontWeight: '800'
+                }}
+              >
+                {joint_p3.verification_result.verification_status}
+              </span>
+            </div>
+
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <div>
+                <strong style={{ color: 'var(--text-secondary)' }}>Cert ID:</strong>{' '}
+                <span style={{ fontFamily: 'monospace', color: 'var(--accent-cyan)' }}>
+                  {joint_p3.verification_result.certificate_id}
+                </span>
+              </div>
+              <div>
+                <strong style={{ color: 'var(--text-secondary)' }}>Decision-Payload Integrity Digest:</strong>{' '}
+                <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                  {joint_p3.verification_result.proposal_digest?.slice(0, 16)}... (SHA-256)
+                </span>
+              </div>
+              <div>
+                <strong style={{ color: 'var(--text-secondary)' }}>Invariants:</strong>{' '}
+                <span>
+                  {joint_p3.verification_result.checked_invariants?.length || 0} checked (
+                  {joint_p3.verification_result.checked_invariants?.join(', ')})
+                </span>
+              </div>
+              <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', fontStyle: 'italic' }}>
+                Prototype integrity notice: SHA-256 decision digest validates payload consistency in-memory. Production deployment requires isolated certificate storage, cryptographic signing (HMAC/Ed25519), and transactional state.
+              </div>
+              {joint_p3.verification_result.violations?.length > 0 && (
+                <div style={{ marginTop: '4px', color: 'var(--accent-rose)' }}>
+                  <strong>Violations ({joint_p3.verification_result.violations.length}):</strong>
+                  <ul style={{ paddingLeft: '16px', marginTop: '2px' }}>
+                    {joint_p3.verification_result.violations.map((v, i) => (
+                      <li key={i}>
+                        [{v.violation_code}] {v.description}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Policy Scope & Comparison Disclaimer */}

@@ -47,6 +47,7 @@ class ApprovalStatus(str, Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     STALE_SNAPSHOT = "STALE_SNAPSHOT"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
 
 
 class PartSource(BaseModel):
@@ -72,6 +73,9 @@ class RepairOrder(BaseModel):
     requires_alignment_hoist: bool = True
     current_vehicle_state: VehicleState = VehicleState.PARTIALLY_DISMANTLED
     technician_signoff_recorded: bool = False
+    is_rollable: bool = Field(default=False, description="Physical rollability tag; must be True for relocation")
+    assigned_technician_id: Optional[str] = Field(default="K1", description="Assigned technician identifier")
+    technician_available_tick: Optional[int] = Field(default=None, description="Tick at which assigned technician becomes free")
 
 
 class ScheduledInterval(BaseModel):
@@ -127,6 +131,7 @@ class Proposal(BaseModel):
     rejected_options: List[RejectedOption] = []
     scheduled_intervals: List[ScheduledInterval] = []
     approval_status: ApprovalStatus = ApprovalStatus.PENDING_APPROVAL
+    verification_result: Optional[Dict[str, Any]] = None
 
 
 class PolicyComparisonResult(BaseModel):
@@ -160,6 +165,8 @@ class ScenarioSnapshot(BaseModel):
     relocation_duration_ticks: int = 3  # 15 minutes each way
     clearance_duration_ticks: int = 2   # 10 minutes (1 verify + 1 transit)
     technician_k1_available: bool = True
+    technician_k2_available_tick: Optional[int] = Field(default=None, description="Bottleneck tick when Tech K2 becomes available")
+    technician_assignments: Optional[Dict[str, Any]] = Field(default=None, description="Preceding technician schedule commitments")
 
 
 class AuditEvent(BaseModel):

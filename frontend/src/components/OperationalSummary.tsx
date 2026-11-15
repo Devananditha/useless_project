@@ -47,6 +47,30 @@ export const OperationalSummary: React.FC<Props> = ({ scenario, proposal, loadin
           >
             {proposal ? `CP-SAT: ${proposal.solver_status}` : 'Awaiting Solver'}
           </span>
+          {proposal?.verification_result && (
+            <span
+              className="badge"
+              style={{
+                background:
+                  proposal.verification_result.verification_status === 'VERIFIED'
+                    ? 'rgba(16, 185, 129, 0.2)'
+                    : 'rgba(239, 68, 68, 0.2)',
+                color:
+                  proposal.verification_result.verification_status === 'VERIFIED'
+                    ? 'var(--accent-emerald)'
+                    : 'var(--accent-rose)',
+                border: `1px solid ${
+                  proposal.verification_result.verification_status === 'VERIFIED'
+                    ? 'rgba(16, 185, 129, 0.4)'
+                    : 'rgba(239, 68, 68, 0.4)'
+                }`,
+                fontSize: '11px',
+                fontWeight: '700'
+              }}
+            >
+              Cert: {proposal.verification_result.verification_status}
+            </span>
+          )}
         </div>
       </div>
 

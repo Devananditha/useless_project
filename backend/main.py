@@ -14,13 +14,15 @@ from backend.models import (
     Proposal,
     PolicyComparisonResult,
     PolicyId,
-    SolveResponse
+    SolveResponse,
+    ApprovalStatus
 )
 from backend.state_store import store
 from backend.solver import solve_recovery_problem
 from backend.policies import run_policy_comparison
 from backend.revalidation import revalidate_and_approve_proposal
 from backend.benchmark import run_benchmark
+from backend.verifier import verify_proposal, VerificationStatus
 
 
 app = FastAPI(
@@ -62,21 +64,16 @@ def get_health() -> Dict[str, Any]:
 
 @app.get("/api/scenarios")
 def list_scenarios() -> Dict[str, Any]:
+    scenarios_list = []
+    for sc_id, snap in store.snapshots.items():
+        scenarios_list.append({
+            "scenario_id": sc_id,
+            "name": snap.scenario_name,
+            "description": snap.description,
+            "is_active": store.current_scenario_id == sc_id
+        })
     return {
-        "scenarios": [
-            {
-                "scenario_id": "S-MATH-01",
-                "name": "Canonical S-MATH-01: Hoist Lock Disruption",
-                "description": "Partially dismantled Ford Explorer on Bay B4; H2 holding saturated. Pure hoist-lock sourcing decision.",
-                "is_active": store.current_scenario_id == "S-MATH-01"
-            },
-            {
-                "scenario_id": "S-MATH-01-ROLLABLE",
-                "name": "Alternate S-MATH-01-ROLLABLE: Relocatable Vehicle",
-                "description": "Ford Explorer certified safe to relocate; 1 available stall in H2 holding. Solver dynamically evaluates relocation.",
-                "is_active": store.current_scenario_id == "S-MATH-01-ROLLABLE"
-            }
-        ],
+        "scenarios": scenarios_list,
         "active_scenario_id": store.current_scenario_id,
         "active_snapshot_version": store.version
     }
@@ -120,8 +117,36 @@ def solve_scenario(request: SolveRequest) -> SolveResponse:
     if request.scenario_id and request.scenario_id != snapshot.scenario_id:
         snapshot = store.select_scenario(request.scenario_id)
 
+    def _verify_and_log(prop: Proposal, snap: ScenarioSnapshot):
+        v_res = verify_proposal(prop, snap)
+        prop.verification_result = v_res.model_dump()
+        if v_res.verification_status != VerificationStatus.VERIFIED:
+            if v_res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE:
+                prop.approval_status = ApprovalStatus.INSUFFICIENT_EVIDENCE
+            else:
+                prop.approval_status = ApprovalStatus.REJECTED
+            prop.feasibility_explanations.append(f"INDEPENDENT VERIFICATION FAILED: {v_res.verification_summary}")
+            store.log_event(
+                event_type="PROPOSAL_VERIFICATION_FAILED",
+                description=f"Proposal {prop.proposal_id} failed verification: {[v.violation_code for v in v_res.violations]}",
+                version_before=snap.snapshot_version,
+                version_after=snap.snapshot_version,
+                details={"proposal_id": prop.proposal_id, "violations": [v.model_dump() for v in v_res.violations]}
+            )
+        else:
+            prop.approval_status = ApprovalStatus.PENDING_APPROVAL
+            store.log_event(
+                event_type="PROPOSAL_VERIFIED",
+                description=f"Proposal {prop.proposal_id} certified across {len(v_res.checked_invariants)} invariants.",
+                version_before=snap.snapshot_version,
+                version_after=snap.snapshot_version,
+                details={"proposal_id": prop.proposal_id, "summary": v_res.verification_summary}
+            )
+
     if request.compare_a2_p3:
         comparison: PolicyComparisonResult = run_policy_comparison(snapshot)
+        _verify_and_log(comparison.baseline_a2, snapshot)
+        _verify_and_log(comparison.joint_p3, snapshot)
         store.save_proposal(comparison.baseline_a2)
         store.save_proposal(comparison.joint_p3)
         return SolveResponse(
@@ -131,6 +156,7 @@ def solve_scenario(request: SolveRequest) -> SolveResponse:
         )
     else:
         proposal: Proposal = solve_recovery_problem(snapshot, request.policy_id)
+        _verify_and_log(proposal, snapshot)
         store.save_proposal(proposal)
         return SolveResponse(
             comparison=None,
@@ -170,6 +196,31 @@ def approve_proposal(proposal_id: str) -> Dict[str, Any]:
 def revalidate_proposal(proposal_id: str) -> Dict[str, Any]:
     """Manual pre-execution revalidation endpoint."""
     return revalidate_and_approve_proposal(proposal_id)
+
+
+@app.post("/api/proposals/{proposal_id}/verify")
+def verify_proposal_endpoint(proposal_id: str) -> Dict[str, Any]:
+    """Independent pure-Python certificate verification of an emitted proposal."""
+    prop = store.get_proposal(proposal_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail=f"Proposal '{proposal_id}' not found.")
+    snap = store.get_active_snapshot()
+    v_res = verify_proposal(prop, snap)
+    prop.verification_result = v_res.model_dump()
+    if v_res.verification_status != VerificationStatus.VERIFIED:
+        if v_res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE:
+            prop.approval_status = ApprovalStatus.INSUFFICIENT_EVIDENCE
+        else:
+            prop.approval_status = ApprovalStatus.REJECTED
+    else:
+        if prop.approval_status not in (ApprovalStatus.APPROVED, ApprovalStatus.STALE_SNAPSHOT):
+            prop.approval_status = ApprovalStatus.PENDING_APPROVAL
+    store.save_proposal(prop)
+    return {
+        "status": v_res.verification_status.value,
+        "proposal_id": proposal_id,
+        "verification": v_res.model_dump()
+    }
 
 
 @app.get("/api/events")

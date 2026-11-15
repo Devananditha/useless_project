@@ -202,12 +202,14 @@ export const App: React.FC = () => {
         if (res.new_comparison) {
           setComparison(res.new_comparison);
         }
-      } else if (res.status === 'APPROVED') {
+      } else if (res.status === 'APPROVED' || res.status === 'ALREADY_APPROVED') {
         // Accepted in local prototype simulation
         setStaleBanner(false);
         setStaleMessage(null);
         setSuccessBanner(
-          `Proposal ${res.proposal?.proposal_id || activeProposal.proposal_id} approved and committed to local state (Prototype Simulation — No Real DMS Dispatch).`
+          res.status === 'ALREADY_APPROVED'
+            ? `Proposal ${res.proposal?.proposal_id || activeProposal.proposal_id} is already authorized and committed (Idempotent guard).`
+            : `Proposal ${res.proposal?.proposal_id || activeProposal.proposal_id} approved and committed to local state (Prototype Simulation — No Real DMS Dispatch).`
         );
 
         if (res.proposal) {
@@ -221,6 +223,30 @@ export const App: React.FC = () => {
         }
         if (res.current_snapshot) {
           setCurrentScenario(res.current_snapshot);
+        }
+      } else if (
+        res.status === 'VERIFICATION_REJECTED' ||
+        res.status === 'UNVERIFIED_PROPOSAL' ||
+        res.status === 'CERTIFICATE_TAMPERED' ||
+        res.status === 'COMMIT_VERIFICATION_FAILED' ||
+        res.status === 'INSUFFICIENT_EVIDENCE' ||
+        res.status === 'REJECTED'
+      ) {
+        setStaleBanner(false);
+        setSuccessBanner(null);
+        const violationDetails =
+          res.violations && res.violations.length > 0
+            ? ` Violations: ${res.violations.map((v) => `[${v.violation_code}] ${v.description}`).join('; ')}`
+            : '';
+        setErrorBanner(`Commit Blocked (${res.status}): ${res.message}${violationDetails}`);
+        if (res.proposal) {
+          setActiveProposal(res.proposal);
+          if (comparison) {
+            setComparison({
+              ...comparison,
+              joint_p3: res.proposal,
+            });
+          }
         }
       } else {
         setErrorBanner(res.message || `Approval failed with status: ${res.status}`);
@@ -398,22 +424,72 @@ export const App: React.FC = () => {
 
             <button
               onClick={handleAdvisorApprove}
-              disabled={loading || !activeProposal || activeProposal.approval_status === 'APPROVED'}
+              disabled={
+                Boolean(
+                  loading ||
+                  !activeProposal ||
+                  activeProposal.approval_status === 'APPROVED' ||
+                  activeProposal.approval_status === 'REJECTED' ||
+                  activeProposal.approval_status === 'INSUFFICIENT_EVIDENCE' ||
+                  activeProposal.approval_status === 'STALE_SNAPSHOT' ||
+                  !activeProposal.verification_result ||
+                  activeProposal.verification_result.verification_status !== 'VERIFIED'
+                )
+              }
               style={{
                 padding: '9px 18px',
-                background: activeProposal?.approval_status === 'APPROVED' ? '#334155' : staleBanner ? 'var(--accent-amber)' : 'var(--accent-emerald)',
-                color: activeProposal?.approval_status === 'APPROVED' ? 'var(--text-muted)' : '#000',
+                background:
+                  activeProposal?.approval_status === 'APPROVED'
+                    ? '#334155'
+                    : activeProposal?.approval_status === 'REJECTED' || (activeProposal?.verification_result && activeProposal?.verification_result.verification_status === 'REJECTED')
+                    ? '#7f1d1d'
+                    : activeProposal?.approval_status === 'INSUFFICIENT_EVIDENCE' || (activeProposal?.verification_result && activeProposal?.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE')
+                    ? '#78350f'
+                    : !activeProposal?.verification_result
+                    ? '#475569'
+                    : staleBanner
+                    ? 'var(--accent-amber)'
+                    : 'var(--accent-emerald)',
+                color:
+                  activeProposal?.approval_status === 'APPROVED'
+                    ? 'var(--text-muted)'
+                    : activeProposal?.approval_status === 'REJECTED' || activeProposal?.approval_status === 'INSUFFICIENT_EVIDENCE'
+                    ? '#fca5a5'
+                    : !activeProposal?.verification_result
+                    ? '#cbd5e1'
+                    : '#000',
                 fontWeight: '800',
                 fontSize: '13px',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px',
-                boxShadow: activeProposal?.approval_status === 'APPROVED' ? 'none' : '0 2px 8px rgba(16, 185, 129, 0.4)'
+                boxShadow:
+                  activeProposal?.approval_status === 'APPROVED' ||
+                  activeProposal?.approval_status === 'REJECTED' ||
+                  activeProposal?.approval_status === 'INSUFFICIENT_EVIDENCE' ||
+                  !activeProposal?.verification_result
+                    ? 'none'
+                    : '0 2px 8px rgba(16, 185, 129, 0.4)',
+                cursor:
+                  activeProposal?.approval_status === 'APPROVED' ||
+                  activeProposal?.approval_status === 'REJECTED' ||
+                  activeProposal?.approval_status === 'INSUFFICIENT_EVIDENCE' ||
+                  !activeProposal?.verification_result
+                    ? 'not-allowed'
+                    : 'pointer'
               }}
             >
               <CheckCircle size={16} />
               {activeProposal?.approval_status === 'APPROVED'
                 ? 'Proposal Committed (Local Simulation)'
+                : activeProposal?.approval_status === 'REJECTED'
+                ? 'Verification Rejected (Cannot Commit)'
+                : activeProposal?.approval_status === 'INSUFFICIENT_EVIDENCE'
+                ? 'Insufficient Evidence (Cannot Commit)'
+                : !activeProposal?.verification_result
+                ? 'Unverified Proposal (Cannot Commit)'
+                : activeProposal?.verification_result.verification_status !== 'VERIFIED'
+                ? 'Verification Failed (Cannot Commit)'
                 : staleBanner
                 ? 'Approve Replacement Proposal'
                 : 'Advisor Approve & Commit'}

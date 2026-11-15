@@ -249,8 +249,9 @@ def run_benchmark(n: int = 100, master_seed: int = 42) -> Dict[str, Any]:
     try:
         with open(artifact_path, "w") as f:
             json.dump(result_data, f, indent=2)
-        with open(latest_path, "w") as f:
-            json.dump(result_data, f, indent=2)
+        if n >= 100:
+            with open(latest_path, "w") as f:
+                json.dump(result_data, f, indent=2)
     except Exception as e:
         # Non-fatal file write error
         pass

@@ -14,7 +14,8 @@ from backend.models import (
 )
 from backend.fixtures import (
     get_canonical_s_math_01_fixture,
-    get_rollable_s_math_01_fixture
+    get_rollable_s_math_01_fixture,
+    SCENARIO_REGISTRY
 )
 
 
@@ -23,8 +24,8 @@ class StateStore:
         self.version = 14  # Initial version e.g. v14 as specified in Act 3 narrative
         self.current_scenario_id = "S-MATH-01"
         self.snapshots: Dict[str, ScenarioSnapshot] = {
-            "S-MATH-01": get_canonical_s_math_01_fixture(version=self.version),
-            "S-MATH-01-ROLLABLE": get_rollable_s_math_01_fixture(version=self.version)
+            sc_id: builder(version=self.version)
+            for sc_id, builder in SCENARIO_REGISTRY.items()
         }
         self.active_snapshot: ScenarioSnapshot = self.snapshots["S-MATH-01"]
         self.proposals: Dict[str, Proposal] = {}
@@ -59,16 +60,17 @@ class StateStore:
         return evt
 
     def get_active_snapshot(self) -> ScenarioSnapshot:
-        return self.active_snapshot
+        return self.active_snapshot.model_copy(deep=True)
 
     def get_scenario(self, scenario_id: str) -> ScenarioSnapshot:
         """
         Strictly read-only retrieval of scenario snapshot.
         Must NOT change version, reset data, or emit side effects.
+        Returns a deep copy to ensure instance isolation.
         """
         if scenario_id not in self.snapshots:
             raise ValueError(f"Unknown scenario ID: {scenario_id}")
-        return self.snapshots[scenario_id]
+        return self.snapshots[scenario_id].model_copy(deep=True)
 
     def select_scenario(self, scenario_id: str) -> ScenarioSnapshot:
         """
@@ -88,7 +90,7 @@ class StateStore:
             version_after=self.version,
             details={"scenario_id": scenario_id}
         )
-        return self.active_snapshot
+        return self.active_snapshot.model_copy(deep=True)
 
     def save_proposal(self, proposal: Proposal):
         self.proposals[proposal.proposal_id] = proposal
@@ -152,8 +154,8 @@ class StateStore:
         self.version = 14
         self.current_scenario_id = "S-MATH-01"
         self.snapshots = {
-            "S-MATH-01": get_canonical_s_math_01_fixture(version=self.version),
-            "S-MATH-01-ROLLABLE": get_rollable_s_math_01_fixture(version=self.version)
+            sc_id: builder(version=self.version)
+            for sc_id, builder in SCENARIO_REGISTRY.items()
         }
         self.active_snapshot = self.snapshots["S-MATH-01"]
         self.proposals.clear()
@@ -164,7 +166,7 @@ class StateStore:
             version_before=v_before,
             version_after=self.version
         )
-        return self.active_snapshot
+        return self.active_snapshot.model_copy(deep=True)
 
 
 # Global singleton store instance for the backend session

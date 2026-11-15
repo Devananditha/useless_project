@@ -127,9 +127,13 @@ def solve_recovery_problem(
     # Bay B4 release on hold = ro1042_comp_hold
     b4_release_hold = ro1042_comp_hold
 
-    # RO-1051 start on hold = b4_release_hold
+    # RO-1051 start on hold = max(b4_release_hold, tech_avail)
+    tech_avail = snapshot.technician_k2_available_tick or snapshot.ro1051.technician_available_tick
     ro1051_start_hold = model.NewIntVar(current_t, H + 20, "ro1051_start_hold")
-    model.Add(ro1051_start_hold == b4_release_hold)
+    if tech_avail is not None:
+        model.AddMaxEquality(ro1051_start_hold, [b4_release_hold, model.NewConstant(int(tech_avail))])
+    else:
+        model.Add(ro1051_start_hold == b4_release_hold)
     ro1051_comp_hold = model.NewIntVar(0, H + 40, "ro1051_comp_hold")
     model.Add(ro1051_comp_hold == ro1051_start_hold + snapshot.ro1051.service_duration_ticks)
 
