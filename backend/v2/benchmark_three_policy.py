@@ -57,16 +57,16 @@ class PolicyMetrics(BaseModel):
     scenario_id: str
     selected_source_id: Optional[str] = None
     selected_movement: Optional[str] = None
-    weighted_lateness: Optional[float] = None
-    ro1042_lateness_ticks: Optional[int] = None
-    ro1051_lateness_ticks: Optional[int] = None
-    ro1042_finish_tick: Optional[int] = None
-    ro1051_finish_tick: Optional[int] = None
-    b4_first_release_tick: Optional[int] = None
-    freight_cost: Optional[float] = None
-    downstream_delay_minutes: Optional[int] = None
+    weighted_lateness: Optional[Any] = None
+    ro1042_lateness_ticks: Optional[Any] = None
+    ro1051_lateness_ticks: Optional[Any] = None
+    ro1042_finish_tick: Optional[Any] = None
+    ro1051_finish_tick: Optional[Any] = None
+    b4_first_release_tick: Optional[Any] = None
+    freight_cost: Optional[Any] = None
+    downstream_delay_minutes: Optional[Any] = None
     solve_time_ms: float = 0.0
-    solver_status: str
+    solver_status: Optional[str] = None
     verification_status: str
     verification_violations: List[str] = Field(default_factory=list)
     is_valid: bool = False
@@ -257,8 +257,95 @@ def compute_paired_bootstrap_ci(
 
 
 # -----------------------------------------------------------------------------
-# 3. Benchmark Execution Engine
+# 3. Benchmark Execution Engine & Strict Metric Validation
 # -----------------------------------------------------------------------------
+
+def validate_policy_metrics_completeness(metrics: PolicyMetrics) -> Tuple[bool, List[str]]:
+    """
+    Strictly validates that a PolicyMetrics instance satisfies all production completeness criteria:
+    - Finite numeric weighted lateness (rejects None, bool, NaN, inf)
+    - Finite numeric freight cost (rejects None, bool, NaN, inf)
+    - Non-empty selected source ID
+    - Valid selected movement ("HOLD_ON_BAY" or "RELOCATE_TO_H2")
+    - Strict integer milestones: RO-1042/RO-1051 lateness and finish ticks, B4 release tick, downstream delay
+    - Successful independent verification (status == "VERIFIED")
+    - Acceptable solver status (A2/P3: "OPTIMAL"/"FEASIBLE", A2+: "HEURISTIC"/"OPTIMAL"/"FEASIBLE")
+
+    Genuinely infeasible results (e.g. INFEASIBLE solver status or unverified) fail closed and remain invalid.
+    """
+    violations: List[str] = []
+
+    # 1. Acceptable solver status
+    if metrics.policy == "A2_PLUS":
+        acceptable_statuses = {"HEURISTIC", "OPTIMAL", "FEASIBLE"}
+    else:
+        acceptable_statuses = {"OPTIMAL", "FEASIBLE"}
+
+    status_str = str(metrics.solver_status) if metrics.solver_status is not None else ""
+    if status_str not in acceptable_statuses:
+        violations.append(f"INVALID_SOLVER_STATUS: {metrics.solver_status}")
+
+    # 2. Independent verification status
+    if metrics.verification_status != VerificationStatus.VERIFIED.value:
+        violations.append(f"UNVERIFIED_STATUS: {metrics.verification_status}")
+
+    # Helper: finite numeric check (rejects None, bool, str, NaN, inf)
+    def _is_finite_number(val: Any) -> bool:
+        if val is None or isinstance(val, bool):
+            return False
+        if not isinstance(val, (int, float)):
+            return False
+        return math.isfinite(val)
+
+    # Helper: strict integer check (rejects None, bool, float, str)
+    def _is_strict_int(val: Any) -> bool:
+        if val is None or isinstance(val, bool):
+            return False
+        return isinstance(val, int)
+
+    # 3. Finite weighted lateness
+    if not _is_finite_number(metrics.weighted_lateness):
+        violations.append("MISSING_OR_NON_FINITE_WEIGHTED_LATENESS")
+
+    # 4. Finite freight cost
+    if not _is_finite_number(metrics.freight_cost):
+        violations.append("MISSING_OR_NON_FINITE_FREIGHT_COST")
+
+    # 5. Populated selected source ID
+    if not metrics.selected_source_id or not isinstance(metrics.selected_source_id, str) or not metrics.selected_source_id.strip():
+        violations.append("MISSING_SELECTED_SOURCE_ID")
+
+    # 6. Populated selected movement
+    if not metrics.selected_movement or not isinstance(metrics.selected_movement, str) or metrics.selected_movement.strip() not in ("HOLD_ON_BAY", "RELOCATE_TO_H2"):
+        violations.append("MISSING_OR_INVALID_SELECTED_MOVEMENT")
+
+    # 7. Populated RO-1042 lateness ticks
+    if not _is_strict_int(metrics.ro1042_lateness_ticks):
+        violations.append("MISSING_OR_INVALID_RO1042_LATENESS_TICKS")
+
+    # 8. Populated RO-1051 lateness ticks
+    if not _is_strict_int(metrics.ro1051_lateness_ticks):
+        violations.append("MISSING_OR_INVALID_RO1051_LATENESS_TICKS")
+
+    # 9. Populated RO-1042 finish tick
+    if not _is_strict_int(metrics.ro1042_finish_tick):
+        violations.append("MISSING_OR_INVALID_RO1042_FINISH_TICK")
+
+    # 10. Populated RO-1051 finish tick
+    if not _is_strict_int(metrics.ro1051_finish_tick):
+        violations.append("MISSING_OR_INVALID_RO1051_FINISH_TICK")
+
+    # 11. Populated B4 first release tick
+    if not _is_strict_int(metrics.b4_first_release_tick):
+        violations.append("MISSING_OR_INVALID_B4_RELEASE_TICK")
+
+    # 12. Populated downstream delay minutes
+    if not _is_strict_int(metrics.downstream_delay_minutes):
+        violations.append("MISSING_OR_INVALID_DOWNSTREAM_DELAY_MINUTES")
+
+    is_valid = (len(violations) == 0)
+    return is_valid, violations
+
 
 def evaluate_seed_a2(snapshot: ScenarioSnapshot) -> PolicyMetrics:
     """Runs and verifies Baseline A2 (Fixed-Source S2 Sequential Baseline)."""
@@ -267,14 +354,8 @@ def evaluate_seed_a2(snapshot: ScenarioSnapshot) -> PolicyMetrics:
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     v_res = verify_proposal(prop, snapshot)
-    is_valid = (
-        prop.solver_status in (SolverStatusEnum.OPTIMAL, SolverStatusEnum.FEASIBLE)
-        and prop.weighted_lateness_ticks is not None
-        and math.isfinite(prop.weighted_lateness_ticks)
-        and v_res.verification_status == VerificationStatus.VERIFIED
-    )
 
-    return PolicyMetrics(
+    metrics = PolicyMetrics(
         policy="A2",
         scenario_id=snapshot.scenario_id,
         selected_source_id=prop.selected_source_id,
@@ -291,10 +372,15 @@ def evaluate_seed_a2(snapshot: ScenarioSnapshot) -> PolicyMetrics:
         solver_status=str(prop.solver_status.value if hasattr(prop.solver_status, "value") else prop.solver_status),
         verification_status=v_res.verification_status.value,
         verification_violations=[v.violation_code for v in v_res.violations],
-        is_valid=is_valid,
+        is_valid=False,
         proposal_digest=v_res.proposal_digest,
         selection_explanation=prop.feasibility_explanations
     )
+    is_valid, completeness_violations = validate_policy_metrics_completeness(metrics)
+    metrics.is_valid = is_valid
+    if completeness_violations:
+        metrics.verification_violations.extend(completeness_violations)
+    return metrics
 
 
 def evaluate_seed_a2_plus(snapshot: ScenarioSnapshot, max_freight_budget_delta: float = 50.0) -> PolicyMetrics:
@@ -326,13 +412,6 @@ def evaluate_seed_a2_plus(snapshot: ScenarioSnapshot, max_freight_budget_delta: 
         violations = [f"ADAPTER_ERROR: {str(exc)}"]
         digest = None
 
-    is_valid = (
-        decision.is_feasible
-        and decision.weighted_lateness is not None
-        and math.isfinite(decision.weighted_lateness)
-        and is_verified
-    )
-
     # Extract anchor details
     anchor_id = decision.candidate_evaluations[0].source_id if decision.candidate_evaluations else None
     eval_list = [
@@ -353,7 +432,7 @@ def evaluate_seed_a2_plus(snapshot: ScenarioSnapshot, max_freight_budget_delta: 
         else 0.0
     )
 
-    return PolicyMetrics(
+    metrics = PolicyMetrics(
         policy="A2_PLUS",
         scenario_id=snapshot.scenario_id,
         selected_source_id=decision.selected_source_id,
@@ -370,13 +449,18 @@ def evaluate_seed_a2_plus(snapshot: ScenarioSnapshot, max_freight_budget_delta: 
         solver_status=decision.status,
         verification_status=VerificationStatus.VERIFIED.value if is_verified else VerificationStatus.REJECTED.value,
         verification_violations=violations,
-        is_valid=is_valid,
+        is_valid=False,
         proposal_digest=digest,
         a2_plus_cheapest_anchor=anchor_id,
         a2_plus_surcharge_applied=surcharge,
         a2_plus_candidate_evaluations=eval_list,
         selection_explanation=decision.selection_explanations
     )
+    is_valid, completeness_violations = validate_policy_metrics_completeness(metrics)
+    metrics.is_valid = is_valid
+    if completeness_violations:
+        metrics.verification_violations.extend(completeness_violations)
+    return metrics
 
 
 def evaluate_seed_p3(snapshot: ScenarioSnapshot) -> PolicyMetrics:
@@ -386,14 +470,8 @@ def evaluate_seed_p3(snapshot: ScenarioSnapshot) -> PolicyMetrics:
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     v_res = verify_proposal(prop, snapshot)
-    is_valid = (
-        prop.solver_status in (SolverStatusEnum.OPTIMAL, SolverStatusEnum.FEASIBLE)
-        and prop.weighted_lateness_ticks is not None
-        and math.isfinite(prop.weighted_lateness_ticks)
-        and v_res.verification_status == VerificationStatus.VERIFIED
-    )
 
-    return PolicyMetrics(
+    metrics = PolicyMetrics(
         policy="P3",
         scenario_id=snapshot.scenario_id,
         selected_source_id=prop.selected_source_id,
@@ -410,10 +488,15 @@ def evaluate_seed_p3(snapshot: ScenarioSnapshot) -> PolicyMetrics:
         solver_status=str(prop.solver_status.value if hasattr(prop.solver_status, "value") else prop.solver_status),
         verification_status=v_res.verification_status.value,
         verification_violations=[v.violation_code for v in v_res.violations],
-        is_valid=is_valid,
+        is_valid=False,
         proposal_digest=v_res.proposal_digest,
         selection_explanation=prop.feasibility_explanations
     )
+    is_valid, completeness_violations = validate_policy_metrics_completeness(metrics)
+    metrics.is_valid = is_valid
+    if completeness_violations:
+        metrics.verification_violations.extend(completeness_violations)
+    return metrics
 
 
 # -----------------------------------------------------------------------------
@@ -426,20 +509,26 @@ def run_three_policy_benchmark(
     bootstrap_seed: int = 42,
     bootstrap_resamples: int = 10000,
     max_freight_budget_delta: float = 50.0,
-    output_dir: str = "generated-results"
+    output_dir: str = "generated-results",
+    seeds: Optional[List[ScenarioSnapshot]] = None
 ) -> ThreePolicyBenchmarkResult:
     """
     Executes the full three-policy paired-seed comparative benchmark.
-    Generates seeds once, executes A2, A2+, and P3 on independent deep copies,
+    Generates seeds once (or accepts an injected seeds collection), executes A2, A2+, and P3 on independent deep copies,
     verifies all solutions independently, computes descriptive & bootstrap statistics,
     and writes timestamped JSON and Markdown reports.
     """
     t_benchmark_start = time.perf_counter()
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    benchmark_id = f"BENCH-3POL-N{n}-S{master_seed}-{timestamp_str}"
 
-    # 1. Generate seeds collection exactly once
-    raw_seeds = generate_benchmark_seeds(n=n, master_seed=master_seed)
+    # 1. Generate seeds collection exactly once (or use injected seeds)
+    if seeds is None:
+        raw_seeds = generate_benchmark_seeds(n=n, master_seed=master_seed)
+    else:
+        raw_seeds = seeds
+        n = len(raw_seeds)
+
+    benchmark_id = f"BENCH-3POL-N{n}-S{master_seed}-{timestamp_str}"
 
     records: List[PairedSeedRecord] = []
     invalid_runs: List[Dict[str, Any]] = []
@@ -463,11 +552,14 @@ def run_three_policy_benchmark(
         # Validate paired admissibility
         invalidation_reasons = []
         if not res_a2.is_valid:
-            invalidation_reasons.append(f"A2 invalid (solver: {res_a2.solver_status}, verifier: {res_a2.verification_status})")
+            issues = f" (issues: {', '.join(res_a2.verification_violations)})" if res_a2.verification_violations else ""
+            invalidation_reasons.append(f"A2 invalid (solver: {res_a2.solver_status}, verifier: {res_a2.verification_status}{issues})")
         if not res_a2p.is_valid:
-            invalidation_reasons.append(f"A2+ invalid (solver: {res_a2p.solver_status}, verifier: {res_a2p.verification_status})")
+            issues = f" (issues: {', '.join(res_a2p.verification_violations)})" if res_a2p.verification_violations else ""
+            invalidation_reasons.append(f"A2+ invalid (solver: {res_a2p.solver_status}, verifier: {res_a2p.verification_status}{issues})")
         if not res_p3.is_valid:
-            invalidation_reasons.append(f"P3 invalid (solver: {res_p3.solver_status}, verifier: {res_p3.verification_status})")
+            issues = f" (issues: {', '.join(res_p3.verification_violations)})" if res_p3.verification_violations else ""
+            invalidation_reasons.append(f"P3 invalid (solver: {res_p3.solver_status}, verifier: {res_p3.verification_status}{issues})")
 
         is_paired_valid = (len(invalidation_reasons) == 0)
 
@@ -617,11 +709,20 @@ def run_three_policy_benchmark(
     wall_clock_sec = round(time.perf_counter() - t_benchmark_start, 2)
 
     scope_limitations = (
-        "Synthetic dealership disruption benchmark with operational jitter. "
-        "Evaluates fixed-source heuristic (A2), single-next-RO deterministic lookahead (A2+), "
-        "and two-tier CP-SAT joint optimization (P3) under discrete 5-minute ticks. "
-        "Outcomes reflect simulated mathematical models and do not represent field-measured "
-        "real-world dealership performance."
+        "Strict Research Limitations & Experimental Scope: "
+        "(1) Canonical Scenario Family: Evaluates one single-bay (B4), two-repair-order (RO-1042/RO-1051), "
+        "two-source (S1/S2) synthetic scenario family with operational jitter. "
+        "(2) Freight Surcharge Range: Generated S1/S2 freight-cost differences fall within the configured $50 threshold; "
+        "this benchmark does not meaningfully test rejection of alternatives exceeding the freight budget. "
+        "(3) Fixed Technician Availability: Technician availability timing is fixed in the generator. "
+        "(4) Single-Bay Boundary: Does not establish P3 superiority under multi-bay, multi-technician, "
+        "or multiple downstream job contention. "
+        "(5) Algorithmic Equivalence Disclaimer: A2+ and P3 producing identical outcomes on this single-bay "
+        "family is not proof of general algorithmic equivalence. "
+        "(6) Synthetic Statistical Population: Bootstrap confidence intervals describe this generated synthetic "
+        "scenario family, not a real dealership population. "
+        "(7) Simulated Boundary: Outcomes reflect simulated mathematical models and do not establish live dealership "
+        "performance or production DMS integration."
     )
 
     result = ThreePolicyBenchmarkResult(
@@ -746,7 +847,7 @@ def generate_benchmark_markdown_report(res: ThreePolicyBenchmarkResult) -> str:
         f"## 4. Analytical Interpretation & Research Findings",
         f"",
         f"### 1. How Frequently A2+ Catches Up With P3",
-        f"- In this paired canonical single-bay family ($N = {res.n_seeds}$), **A2+ matches P3 on 100% of scenarios** (100 ties, 0 wins, 0 losses).",
+        f"- In this paired canonical single-bay family ($N = {res.n_seeds}$), A2+ matches P3 on {res.pairwise_comparisons['A2_PLUS_vs_P3'].ties} of {res.pairwise_comparisons['A2_PLUS_vs_P3'].valid_paired_count} valid scenarios ({res.pairwise_comparisons['A2_PLUS_vs_P3'].tie_rate_pct:.1f}% ties, {res.pairwise_comparisons['A2_PLUS_vs_P3'].wins_advanced} P3 wins, {res.pairwise_comparisons['A2_PLUS_vs_P3'].losses_advanced} P3 losses).",
         f"- When a single bottleneck bay has one primary disrupted job and one immediate downstream fleet commitment, single-next-RO lookahead with an attentive advisor heuristic is sufficient to identify the lateness-minimizing expedited courier.",
         f"",
         f"### 2. Surcharge Restraint and Null-Benefit Pruning",
@@ -761,12 +862,17 @@ def generate_benchmark_markdown_report(res: ThreePolicyBenchmarkResult) -> str:
         f"",
         f"---",
         f"",
-        f"## 5. Research Scope & Disclaimers",
+        f"## 5. Explicit Research Limitations & Disclaimers",
         f"",
-        f"- All scenarios evaluated are synthetic disruption variations modeled around canonical benchmark seeds.",
-        f"- Results do not claim real dealership validation, production DMS telemetry, or live supplier availability.",
-        f"- A2+ is a deterministic heuristic and is explicitly labeled `HEURISTIC`. P3 is a mixed-integer constraint optimization model solved via CP-SAT.",
-        f"- Artifact generated automatically by `backend/v2/benchmark_three_policy.py`."
+        f"1. **Canonical Scenario Family:** The N=100 generator represents one canonical single-bay, two-repair-order, two-source scenario family.",
+        f"2. **Freight Surcharge Range:** Generated S1/S2 freight-cost differences fall within the configured $50 threshold. Therefore, this benchmark does not meaningfully test rejection of alternatives exceeding the freight budget.",
+        f"3. **Fixed Technician Availability:** Technician availability timing is fixed in the generator.",
+        f"4. **Single-Bay Boundary:** The experiment does not establish P3 superiority under multi-bay, multi-technician, or multiple-downstream-job contention.",
+        f"5. **No General Algorithmic Equivalence:** A2+ and P3 matching in this experiment is not proof of algorithmic equivalence in more general scheduling environments.",
+        f"6. **Synthetic Statistical Population:** Bootstrap confidence intervals describe this generated synthetic scenario family, not a real dealership population.",
+        f"7. **Simulated Boundary:** The results do not establish live dealership performance or production DMS integration.",
+        f"",
+        f"Artifact generated automatically by `backend/v2/benchmark_three_policy.py`."
     ])
 
     return "\n".join(lines)

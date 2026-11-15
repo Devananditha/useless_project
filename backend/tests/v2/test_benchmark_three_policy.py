@@ -26,6 +26,8 @@ from backend.v2.benchmark_three_policy import (
     evaluate_seed_a2,
     evaluate_seed_a2_plus,
     evaluate_seed_p3,
+    validate_policy_metrics_completeness,
+    PolicyMetrics,
     ThreePolicyBenchmarkResult
 )
 
@@ -165,27 +167,242 @@ def test_deterministic_bootstrap_confidence_intervals():
 
 
 # -----------------------------------------------------------------------------
-# 5. Invalid Run Handling and Failure Gating Tests
+# 5. Invalid Run Handling and Complete Orchestration Tests
 # -----------------------------------------------------------------------------
 
-def test_invalid_run_handling_and_exclusion(tmp_path):
+def test_complete_benchmark_orchestration_with_injected_invalid_snapshots(tmp_path):
     """
-    Prove that if an invalid run occurs (e.g. verification failure or infeasibility):
-    1. It is recorded in invalid_runs with reason.
-    2. It is excluded from valid paired statistics.
-    3. The record is NOT silently dropped from the total records list.
+    Task 1: Deterministic test injecting a controlled set of synthetic snapshots
+    into the complete benchmark execution path.
+    Verifies:
+    1. A2, A2+, and P3 execute for every supplied snapshot.
+    2. An infeasible or rejected policy output invalidates that paired scenario.
+    3. Invalid scenarios remain present in the complete `records` collection.
+    4. Invalid scenarios appear in `invalid_runs`, with correct scenario ID and failure reason.
+    5. Invalid scenarios are excluded from paired aggregate statistics.
+    6. Valid scenarios remain included in aggregate statistics.
+    7. Wins + ties + losses equal `valid_paired_count` for every pairwise comparison.
+    8. The final valid paired count and validity percentage are correct.
     """
     seeds = generate_benchmark_seeds(n=3, master_seed=42)
-    # Create an invalid seed by setting all sources to ATP = 0 for seed 1
-    corrupt_seeds = copy.deepcopy(seeds)
-    for s in corrupt_seeds[1].sources:
+    test_seeds = copy.deepcopy(seeds)
+
+    # Invalidate Seed 1 by zeroing ATP across all part sources (causes INFEASIBLE across policies)
+    for s in test_seeds[1].sources:
         s.atp = 0
 
-    # Execute evaluate_seed_a2_plus on corrupt seed
-    m_a2p_corrupt = evaluate_seed_a2_plus(corrupt_seeds[1])
-    assert m_a2p_corrupt.is_valid is False
-    assert m_a2p_corrupt.solver_status == "INFEASIBLE"
-    assert m_a2p_corrupt.verification_status == "NOT_VERIFIABLE"
+    out_dir = str(tmp_path / "artifacts")
+    res = run_three_policy_benchmark(
+        seeds=test_seeds,
+        bootstrap_seed=42,
+        bootstrap_resamples=500,
+        output_dir=out_dir
+    )
+
+    # 1. Total seeds and execution across all policies
+    assert res.total_seeds == 3
+    assert len(res.records) == 3
+
+    # Seed 0: valid
+    r0 = res.records[0]
+    assert r0.is_valid_for_paired_analysis is True
+    assert set(r0.policies.keys()) == {"A2", "A2_PLUS", "P3"}
+    assert all(p.is_valid for p in r0.policies.values())
+
+    # Seed 1: invalid, but executed and recorded
+    r1 = res.records[1]
+    assert r1.is_valid_for_paired_analysis is False
+    assert r1.scenario_id == test_seeds[1].scenario_id
+    assert set(r1.policies.keys()) == {"A2", "A2_PLUS", "P3"}
+    assert not all(p.is_valid for p in r1.policies.values())
+    assert len(r1.invalidation_reasons) > 0
+
+    # Seed 2: valid
+    r2 = res.records[2]
+    assert r2.is_valid_for_paired_analysis is True
+    assert all(p.is_valid for p in r2.policies.values())
+
+    # 2. Invalid runs collection
+    assert len(res.invalid_runs) == 1
+    assert res.invalid_runs[0]["seed_index"] == 1
+    assert res.invalid_runs[0]["scenario_id"] == test_seeds[1].scenario_id
+    assert len(res.invalid_runs[0]["reasons"]) > 0
+
+    # 3. Valid counts and percentages
+    assert res.valid_paired_seeds == 2
+    assert res.valid_paired_rate_pct == round(2 / 3 * 100.0, 2)
+
+    # 4. Aggregates include only valid seeds
+    for pol in ("A2", "A2_PLUS", "P3"):
+        agg = res.policy_aggregates[pol]
+        assert agg.valid_count == 2
+        assert agg.total_seeds == 3
+        assert agg.validity_rate_pct == round(2 / 3 * 100.0, 2)
+        # Expected mean should be average of Seed 0 and Seed 2
+        expected_mean = (r0.policies[pol].weighted_lateness + r2.policies[pol].weighted_lateness) / 2.0
+        assert agg.mean_weighted_lateness == round(expected_mean, 2)
+
+    # 5. Pairwise reconciliation: wins + ties + losses == valid_paired_count
+    for comp_key, comp in res.pairwise_comparisons.items():
+        assert comp.valid_paired_count == 2
+        assert comp.wins_advanced + comp.ties + comp.losses_advanced == 2
+
+
+# -----------------------------------------------------------------------------
+# 5b. Focused PolicyMetrics Completeness and Type Validation Tests (Task 2)
+# -----------------------------------------------------------------------------
+
+def _make_valid_sample_metrics(policy: str = "P3", **overrides) -> PolicyMetrics:
+    """Helper to construct a valid base PolicyMetrics object for mutation testing."""
+    params = {
+        "policy": policy,
+        "scenario_id": "TEST-SCENARIO-01",
+        "selected_source_id": "S1",
+        "selected_movement": "HOLD_ON_BAY",
+        "weighted_lateness": 24.0,
+        "ro1042_lateness_ticks": 0,
+        "ro1051_lateness_ticks": 8,
+        "ro1042_finish_tick": 38,
+        "ro1051_finish_tick": 59,
+        "b4_first_release_tick": 38,
+        "freight_cost": 50.38,
+        "downstream_delay_minutes": 40,
+        "solve_time_ms": 15.0,
+        "solver_status": "OPTIMAL",
+        "verification_status": "VERIFIED",
+        "verification_violations": [],
+        "is_valid": True,
+        "proposal_digest": "test_sha256_digest"
+    }
+    params.update(overrides)
+    return PolicyMetrics(**params)
+
+
+def test_metric_validation_valid_sample_passes():
+    """Verify that a complete, valid sample passes all completeness checks."""
+    m = _make_valid_sample_metrics()
+    is_valid, violations = validate_policy_metrics_completeness(m)
+    assert is_valid is True
+    assert violations == []
+
+
+def test_metric_validation_missing_weighted_lateness():
+    """Missing weighted lateness must fail validation."""
+    m = _make_valid_sample_metrics(weighted_lateness=None)
+    is_valid, violations = validate_policy_metrics_completeness(m)
+    assert is_valid is False
+    assert any("MISSING_OR_NON_FINITE_WEIGHTED_LATENESS" in v for v in violations)
+
+
+def test_metric_validation_non_finite_weighted_lateness():
+    """Non-finite or boolean weighted lateness (NaN, +inf, -inf, True) must fail validation."""
+    for bad_val in [float("nan"), float("inf"), float("-inf"), True, False]:
+        m = _make_valid_sample_metrics(weighted_lateness=bad_val)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False, f"Failed to reject weighted_lateness={bad_val}"
+        assert any("MISSING_OR_NON_FINITE_WEIGHTED_LATENESS" in v for v in violations)
+
+
+def test_metric_validation_missing_freight_cost():
+    """Missing freight cost must fail validation."""
+    m = _make_valid_sample_metrics(freight_cost=None)
+    is_valid, violations = validate_policy_metrics_completeness(m)
+    assert is_valid is False
+    assert any("MISSING_OR_NON_FINITE_FREIGHT_COST" in v for v in violations)
+
+
+def test_metric_validation_non_finite_freight_cost():
+    """Non-finite or boolean freight cost (NaN, +inf, -inf, True) must fail validation."""
+    for bad_val in [float("nan"), float("inf"), float("-inf"), True, False]:
+        m = _make_valid_sample_metrics(freight_cost=bad_val)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False, f"Failed to reject freight_cost={bad_val}"
+        assert any("MISSING_OR_NON_FINITE_FREIGHT_COST" in v for v in violations)
+
+
+def test_metric_validation_missing_selected_source():
+    """Missing or empty selected source ID must fail validation."""
+    for bad_src in [None, "", "   "]:
+        m = _make_valid_sample_metrics(selected_source_id=bad_src)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False
+        assert any("MISSING_SELECTED_SOURCE_ID" in v for v in violations)
+
+
+def test_metric_validation_missing_or_invalid_movement():
+    """Missing, empty, or unsupported movement option must fail validation."""
+    for bad_move in [None, "", "UNSUPPORTED_MOVE", "TELEPORT"]:
+        m = _make_valid_sample_metrics(selected_movement=bad_move)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False
+        assert any("MISSING_OR_INVALID_SELECTED_MOVEMENT" in v for v in violations)
+
+
+def test_metric_validation_missing_schedule_milestones():
+    """Missing, float, or boolean schedule milestones must fail validation."""
+    milestones = [
+        ("ro1042_lateness_ticks", "MISSING_OR_INVALID_RO1042_LATENESS_TICKS"),
+        ("ro1051_lateness_ticks", "MISSING_OR_INVALID_RO1051_LATENESS_TICKS"),
+        ("ro1042_finish_tick", "MISSING_OR_INVALID_RO1042_FINISH_TICK"),
+        ("ro1051_finish_tick", "MISSING_OR_INVALID_RO1051_FINISH_TICK"),
+        ("b4_first_release_tick", "MISSING_OR_INVALID_B4_RELEASE_TICK"),
+    ]
+    for field_name, expected_violation in milestones:
+        # Test None
+        m_none = _make_valid_sample_metrics(**{field_name: None})
+        is_v, viols = validate_policy_metrics_completeness(m_none)
+        assert is_v is False, f"Failed to reject None for {field_name}"
+        assert any(expected_violation in v for v in viols)
+
+        # Test boolean
+        m_bool = _make_valid_sample_metrics(**{field_name: True})
+        is_v, viols = validate_policy_metrics_completeness(m_bool)
+        assert is_v is False, f"Failed to reject boolean for {field_name}"
+        assert any(expected_violation in v for v in viols)
+
+        # Test float
+        m_float = _make_valid_sample_metrics(**{field_name: 38.5})
+        is_v, viols = validate_policy_metrics_completeness(m_float)
+        assert is_v is False, f"Failed to reject float for {field_name}"
+        assert any(expected_violation in v for v in viols)
+
+
+def test_metric_validation_missing_or_invalid_downstream_delay():
+    """Missing, float, or boolean downstream delay minutes must fail validation."""
+    for bad_delay in [None, True, False, 40.5]:
+        m = _make_valid_sample_metrics(downstream_delay_minutes=bad_delay)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False, f"Failed to reject downstream_delay_minutes={bad_delay}"
+        assert any("MISSING_OR_INVALID_DOWNSTREAM_DELAY_MINUTES" in v for v in violations)
+
+
+def test_metric_validation_invalid_solver_status():
+    """Invalid or genuinely infeasible solver status must fail validation."""
+    # For P3 / A2: INFEASIBLE or UNKNOWN fails
+    for bad_status in ["INFEASIBLE", "UNKNOWN", "MODEL_INVALID", None]:
+        m = _make_valid_sample_metrics(policy="P3", solver_status=bad_status)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False
+        assert any("INVALID_SOLVER_STATUS" in v for v in violations)
+
+    # For A2+: INFEASIBLE fails, but HEURISTIC passes
+    m_a2p_infeasible = _make_valid_sample_metrics(policy="A2_PLUS", solver_status="INFEASIBLE")
+    is_v, viols = validate_policy_metrics_completeness(m_a2p_infeasible)
+    assert is_v is False
+    assert any("INVALID_SOLVER_STATUS" in v for v in viols)
+
+    m_a2p_heuristic = _make_valid_sample_metrics(policy="A2_PLUS", solver_status="HEURISTIC")
+    is_v, viols = validate_policy_metrics_completeness(m_a2p_heuristic)
+    assert is_v is True
+
+
+def test_metric_validation_verification_rejection():
+    """Unverified or rejected verification status must fail validation."""
+    for bad_v_status in ["REJECTED", "NOT_VERIFIABLE", "INSUFFICIENT_EVIDENCE", "PENDING"]:
+        m = _make_valid_sample_metrics(verification_status=bad_v_status)
+        is_valid, violations = validate_policy_metrics_completeness(m)
+        assert is_valid is False
+        assert any("UNVERIFIED_STATUS" in v for v in violations)
 
 
 # -----------------------------------------------------------------------------

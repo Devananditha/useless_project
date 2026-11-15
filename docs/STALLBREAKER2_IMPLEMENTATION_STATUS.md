@@ -317,24 +317,31 @@ This audit establishes the baseline status of all 20 core subsystems across Tier
 | 9 | Tier 2 CP-SAT Formulation | Tier A | **TESTED** | `backend/solver.py` | `test_01-05, 30, 31` |
 | 10 | Decision-Coupled Source Search | Tier A | **TESTED** | `backend/solver.py` | `test_03, 04, 26` |
 | 11 | Two-Layer JPS Lower Bound | Tier B | **NOT STARTED** | None | None |
-| 12 | Independent Verifier | Tier A | **NOT STARTED** | None | None |
+| 12 | Independent Verifier | Tier A | **TESTED** | `backend/verifier.py` | `test_verifier.py, test_approval_integrity.py` |
 | 13 | Quote Subset Evaluation | Tier B | **NOT STARTED** | None | None |
 | 14 | Four-State Reservation Hold | Tier A | **IN PROGRESS** | `backend/revalidation.py` | `test_15, 20` |
-| 15 | Read-Set Revalidation | Tier A | **TESTED** | `backend/revalidation.py` | `test_14-16, 28` |
+| 15 | Read-Set Revalidation | Tier A | **TESTED** | `backend/revalidation.py` | `test_14-16, 28, test_approval_integrity.py` |
 | 16 | Transactional Outbox | Tier C | **NOT STARTED** | None | None |
 | 17 | Deterministic Simulator | Tier A | **TESTED** | `backend/benchmark.py` | `test_23, 24` |
-| 18 | A2, A2+, P3, P3-mono Baselines | Tier A/B | **IN PROGRESS** | `backend/policies.py` | `test_01-04` |
-| 19 | LLM-Off Parity | Tier A | **IMPLEMENTED**| `backend/` | `All 31 Tests` |
+| 18 | A2, A2+, P3 Baselines | Tier A/B | **TESTED** | `backend/v2/` | `test_baseline_a2_plus.py, test_benchmark_three_policy.py` |
+| 19 | LLM-Off Parity | Tier A | **IMPLEMENTED**| `backend/` | `All Backend Tests` |
 | 20 | Quote and Recover UI | Tier A | **IN PROGRESS** | `frontend/src/` | `test_frontend_proxy` |
 
 ---
 
 ## 4. Gap Assessment for StallBreaker 2 Migration
 
-To transition cleanly from the current StallBreaker 1.2 prototype to the complete StallBreaker 2 technical report specification, the following architectural gaps must be systematically closed in Phase 1:
+To transition cleanly from the current StallBreaker 1.2 prototype to the complete StallBreaker 2 technical report specification, the following architectural gaps remain for future phases:
 
 1. **Quote Mode Engine:** Implement the missing Quote mode mathematical objective and endpoint, allowing service advisors to test new repair scopes before customer commitment.
-2. **Independent Verifier:** Decouple verification into an isolated mathematical checker to guarantee zero false positives from solver edge cases.
-3. **A2+ Baseline:** Implement the stronger sequential baseline with 1-step lookahead to provide rigorous benchmark comparisons.
-4. **Four-State Reservation Hold Lifecycle:** Formalize the provisional hold lifecycle with TTL expiration.
-5. **Multi-Bay / Multi-RO Scope Expansion:** Generalize resource constraints beyond single Bay B4 to multi-bay disjunctive scheduling.
+2. **Four-State Reservation Hold Lifecycle:** Formalize the provisional hold lifecycle with TTL expiration.
+3. **Multi-Bay / Multi-RO Scope Expansion:** Generalize resource constraints beyond single Bay B4 to multi-bay disjunctive scheduling.
+
+---
+
+## 5. Stages 1–4.1 Completed Milestones (November 2026)
+
+- **Stage 1 (Fixture Registry):** Multi-scenario state registry with canonical fixtures (`S-MATH-01`, `S-MATH-01-ROLLABLE`, `S-MATH-02`, `S-MATH-03`).
+- **Stage 2 & 2.1–2.2.3 (Independent Verifier):** Pure-Python verifier (`backend/verifier.py`) with 11 domain invariants, 41 mutation tests, SHA-256 proposal digests, and 7-gate approval pipeline.
+- **Stage 3 & 3.1 (A2+ Baseline):** Deterministic 1-step lookahead heuristic (`backend/v2/baseline_a2_plus.py`) with bounded freight surcharge ($\Delta_{\max} = \$50.00$), null-benefit pruning, and verifier compatibility.
+- **Stage 4 & 4.1 (Three-Policy Benchmark & Validation Hardening):** Full paired comparative benchmark (`backend/v2/benchmark_three_policy.py`) across $N=100$ seeds with $B=10{,}000$ bootstrap iterations, complete invalid-run exclusion testing, strict metric type validation (rejecting booleans, NaN, inf), and documented research boundaries (`docs/BENCHMARK_RESEARCH_LIMITATIONS.md`).

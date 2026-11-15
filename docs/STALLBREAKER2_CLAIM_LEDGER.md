@@ -83,6 +83,8 @@ Every technical, operational, and commercial statement made across the StallBrea
 | **C-22** | Tekion parts inventory API distinguishes between physical on-hand stock and uncommitted available-to-promise (ATP). | `[VALIDATE]` | Question for Tekion Mentor (Item 2). Requires schema review. |
 | **C-23** | Dealerships permit automated temporary reservation holds (30–60 min TTL) on supplier inventory via OEM D2D or parts aggregators. | `[VALIDATE]` | Question for Tekion Mentor (Item 5). Involves commercial supplier agreements. |
 | **C-24** | Real dealership shop floors track physical vehicle rollability and holding stall occupancy in real-time DMS data. | `[VALIDATE]` | Question for Tekion Mentor (Item 6). Involves service advisor field adoption reality. |
+| **C-25** | On the $N=100$ canonical synthetic single-bay family, deterministic lookahead baseline A2+ matches CP-SAT optimization P3 on 100% of scenarios (100 ties, 0 wins, 0 losses; $\Delta Z_1 = +0.00$ ticks, 95% CI $[0.00, 0.00]$). | `[MEASURED-SYNTH]` | Recorded in `generated-results/three_policy_benchmark_n100_seed42_20261115_191819.json`; certified by `backend/verifier.py`. |
+| **C-26** | The empirical parity between A2+ and P3 on the single-bay canonical family does not prove general algorithmic equivalence; P3's structural combinatorial superiority is relevant in multi-bay, multi-technician, and buffer-contention disruptions. | `[INFERENCE]` | Documented in `docs/BENCHMARK_RESEARCH_LIMITATIONS.md`; verified by capability-support architectural audit. |
 
 ---
 

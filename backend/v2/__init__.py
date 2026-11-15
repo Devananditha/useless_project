@@ -15,6 +15,7 @@ from backend.v2.baseline_a2_plus import (
 )
 from backend.v2.benchmark_three_policy import (
     run_three_policy_benchmark,
+    validate_policy_metrics_completeness,
     ThreePolicyBenchmarkResult,
     PairedSeedRecord,
     PolicyMetrics,
@@ -31,6 +32,7 @@ __all__ = [
     "A2PlusDecision",
     "A2PlusVerifierView",
     "run_three_policy_benchmark",
+    "validate_policy_metrics_completeness",
     "ThreePolicyBenchmarkResult",
     "PairedSeedRecord",
     "PolicyMetrics",
