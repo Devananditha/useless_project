@@ -7,16 +7,20 @@ from backend.v2.baseline_a2_plus import (
     solve_a2_plus_policy,
     evaluate_deterministic_schedule,
     check_a2_plus_relocation_gating,
+    a2_plus_to_verifier_view,
     a2_plus_to_proposal_adapter,
     A2PlusCandidatePlan,
-    A2PlusDecision
+    A2PlusDecision,
+    A2PlusVerifierView
 )
 
 __all__ = [
     "solve_a2_plus_policy",
     "evaluate_deterministic_schedule",
     "check_a2_plus_relocation_gating",
+    "a2_plus_to_verifier_view",
     "a2_plus_to_proposal_adapter",
     "A2PlusCandidatePlan",
-    "A2PlusDecision"
+    "A2PlusDecision",
+    "A2PlusVerifierView"
 ]

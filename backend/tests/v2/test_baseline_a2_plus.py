@@ -25,14 +25,17 @@ from backend.fixtures import (
 )
 from backend.verifier import (
     verify_proposal,
+    compute_proposal_digest,
     VerificationStatus
 )
 from backend.v2.baseline_a2_plus import (
     solve_a2_plus_policy,
     evaluate_deterministic_schedule,
     check_a2_plus_relocation_gating,
+    a2_plus_to_verifier_view,
     a2_plus_to_proposal_adapter,
-    A2PlusDecision
+    A2PlusDecision,
+    A2PlusVerifierView
 )
 
 
@@ -480,3 +483,112 @@ def test_a2_plus_idempotent_identical_decisions():
         assert i1.end_tick == i2.end_tick
         assert i1.entity_id == i2.entity_id
         assert i1.operation == i2.operation
+
+
+# -----------------------------------------------------------------------------
+# 6. Stage 3.1 Verifier Identity & Tie-Break Audit Tests
+# -----------------------------------------------------------------------------
+
+def test_a2_plus_verifier_view_preserves_identity_in_digest():
+    """
+    Stage 3.1 Task 1: Prove that A2PlusVerifierView preserves policy_id='A2_PLUS'
+    in the computed decision digest without modifying PolicyId enum or Proposal.
+    """
+    snap = get_canonical_s_math_01_fixture(version=14)
+    decision = solve_a2_plus_policy(snap)
+    assert decision.is_feasible is True
+
+    view = a2_plus_to_verifier_view(decision)
+    assert isinstance(view, A2PlusVerifierView)
+    assert view.policy_id == "A2_PLUS"
+
+    digest_a2_plus = compute_proposal_digest(view)
+    
+    # Mutate view copy to legacy A2 and verify the digest changes strictly
+    view_a2 = view.model_copy()
+    view_a2.policy_id = "A2"
+    digest_a2 = compute_proposal_digest(view_a2)
+    assert digest_a2_plus != digest_a2
+
+    # Verify that verify_proposal validates the view and records A2_PLUS digest
+    v_res = verify_proposal(view, snap)
+    assert v_res.verification_status == VerificationStatus.VERIFIED
+    assert v_res.proposal_digest == digest_a2_plus
+
+
+def test_a2_plus_infeasible_adapter_conversion_rejected():
+    """
+    Stage 3.1 Task 2: Prove that infeasible A2PlusDecision cannot be converted into
+    a populated verifier view/proposal, rejecting fabrication of 0/999 milestones.
+    """
+    snap = get_canonical_s_math_01_fixture(version=14)
+    snap.sources = []  # Force infeasibility
+
+    decision = solve_a2_plus_policy(snap)
+    assert decision.is_feasible is False
+    assert decision.status == "INFEASIBLE"
+    assert decision.b4_release_tick is None
+    assert decision.ro1051_finish_tick is None
+    assert decision.ro1042_finish_tick is None
+    assert decision.weighted_lateness is None
+    assert decision.freight_cost is None
+
+    # Conversion must raise ValueError and reject fabrication
+    with pytest.raises(ValueError) as excinfo:
+        a2_plus_to_verifier_view(decision)
+    assert "Cannot project infeasible A2PlusDecision" in str(excinfo.value)
+
+    # Prove backwards-compatibility alias also raises ValueError
+    with pytest.raises(ValueError):
+        a2_plus_to_proposal_adapter(decision)
+
+
+def test_a2_plus_tie_break_earlier_usable_tick_wins():
+    """
+    Stage 3.1 Task 3A: When two qualifying alternatives have equal weighted lateness
+    and equal cost, earlier usable-ready tick must strictly win.
+    """
+    snap = get_canonical_s_math_01_fixture(version=14)
+    snap.technician_k2_available_tick = 50  # Bottleneck bounds completion time
+
+    # S_cheap: cost $10, usable tick 55 -> Z1 = 117.0
+    s_cheap = PartSource(source_id="S_CHEAP", name="Slow Ground", usable_time_ticks=55, cost=10.0, atp=1, fitment_verified=True, quote_valid=True)
+    # Alt 1: S_LATE: cost $40, usable tick 30 -> clears B4 at 44 -> ro1051 starts at max(44, 50)=50 -> Z1 = 60.0
+    s_late = PartSource(source_id="S_LATE", name="Air Express Late", usable_time_ticks=30, cost=40.0, atp=1, fitment_verified=True, quote_valid=True)
+    # Alt 2: S_EARLY: cost $40, usable tick 24 -> clears B4 at 38 -> ro1051 starts at max(38, 50)=50 -> Z1 = 60.0
+    s_early = PartSource(source_id="S_EARLY", name="Air Express Early", usable_time_ticks=24, cost=40.0, atp=1, fitment_verified=True, quote_valid=True)
+
+    # Intentionally place S_LATE before S_EARLY in sources
+    snap.sources = [s_cheap, s_late, s_early]
+
+    decision = solve_a2_plus_policy(snap, max_freight_budget_delta=50.0)
+
+    # Both s_late and s_early qualify (delta $30 <= $50, Z1 60.0 < 117.0, cost $40 == $40)
+    # S_EARLY has usable_time_ticks 24 < 30, so S_EARLY must win
+    assert decision.selected_source_id == "S_EARLY"
+    assert decision.freight_cost == 40.0
+    assert decision.weighted_lateness == 60.0
+
+
+def test_a2_plus_tie_break_lexicographically_lower_source_id_wins():
+    """
+    Stage 3.1 Task 3B: When two qualifying alternatives have equal weighted lateness,
+    equal cost, AND equal usable-ready tick, lexicographically lower source ID must win.
+    """
+    snap = get_canonical_s_math_01_fixture(version=14)
+    snap.technician_k2_available_tick = 50
+
+    s_cheap = PartSource(source_id="S_CHEAP", name="Slow Ground", usable_time_ticks=55, cost=10.0, atp=1, fitment_verified=True, quote_valid=True)
+    s_beta = PartSource(source_id="S_BETA", name="Courier Beta", usable_time_ticks=25, cost=40.0, atp=1, fitment_verified=True, quote_valid=True)
+    s_alpha = PartSource(source_id="S_ALPHA", name="Courier Alpha", usable_time_ticks=25, cost=40.0, atp=1, fitment_verified=True, quote_valid=True)
+
+    # Intentionally place S_BETA before S_ALPHA
+    snap.sources = [s_cheap, s_beta, s_alpha]
+
+    decision = solve_a2_plus_policy(snap, max_freight_budget_delta=50.0)
+
+    # Both qualify with identical Z1, identical cost $40, identical usable tick 25
+    # Lexicographical comparison: 'S_ALPHA' < 'S_BETA'
+    assert decision.selected_source_id == "S_ALPHA"
+    assert decision.freight_cost == 40.0
+    assert decision.weighted_lateness == 60.0

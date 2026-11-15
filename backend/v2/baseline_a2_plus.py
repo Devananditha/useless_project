@@ -12,7 +12,7 @@ Conforms strictly to:
 """
 
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from pydantic import BaseModel, Field
 
 from backend.models import (
@@ -585,65 +585,94 @@ def solve_a2_plus_policy(
 
 
 # -----------------------------------------------------------------------------
-# 6. Verifier Compatibility Adapter
+# 6. Verifier Compatibility View & Adapter
 # -----------------------------------------------------------------------------
 
-def a2_plus_to_proposal_adapter(decision: A2PlusDecision) -> Proposal:
+class A2PlusVerifierView(BaseModel):
     """
-    Explicit, narrow adapter converting an A2PlusDecision into a standard Proposal object
-    so that backend/verifier.py can certify its physical, temporal, and mathematical invariants.
-    Labels solver_status as FEASIBLE (or INFEASIBLE) while keeping the policy clearly distinct.
-    Does NOT connect A2+ to the advisor approval/commit pipeline.
+    Dedicated verifier-input projection/view for A2+ decisions.
+    Preserves policy_id='A2_PLUS' in the decision digest and invariant checks without
+    modifying the legacy PolicyId enum or the production Proposal model.
+    Provides all decision-relevant fields required by compute_proposal_digest() and verify_proposal().
     """
-    if not decision.is_feasible:
-        return Proposal(
-            proposal_id=f"PROP-{decision.decision_id}",
-            run_id=f"RUN-{decision.decision_id}",
-            scenario_id=decision.scenario_id,
-            policy_id=PolicyId.A2,  # Schema compliance for adapter
-            input_snapshot_version=decision.snapshot_version,
-            selected_source_id=None,
-            selected_source_name=None,
-            selected_movement="HOLD_ON_BAY",
-            b4_release_tick=0,
-            b4_release_clock="08:00",
-            ro1051_finish_tick=0,
-            ro1051_finish_clock="08:00",
-            ro1042_finish_tick=0,
-            ro1042_finish_clock="08:00",
-            weighted_lateness_ticks=999.0,
-            ro1042_lateness_ticks=999,
-            ro1051_lateness_ticks=999,
-            downstream_delay_minutes=4995,
-            parts_freight_cost=0.0,
-            solver_status=SolverStatusEnum.INFEASIBLE,
-            solve_time_ms=decision.solve_time_ms,
-            feasibility_explanations=decision.selection_explanations,
-            rejected_options=decision.rejected_options,
-            scheduled_intervals=[],
-            approval_status=ApprovalStatus.PENDING_APPROVAL
+    proposal_id: str
+    run_id: str
+    scenario_id: str
+    policy_id: str = "A2_PLUS"
+    input_snapshot_version: int
+    selected_source_id: Optional[str] = None
+    selected_source_name: Optional[str] = None
+    selected_movement: Optional[str] = "HOLD_ON_BAY"
+    b4_release_tick: int
+    b4_release_clock: str
+    ro1051_finish_tick: int
+    ro1051_finish_clock: str
+    ro1042_finish_tick: int
+    ro1042_finish_clock: str
+    weighted_lateness_ticks: float
+    ro1042_lateness_ticks: int
+    ro1051_lateness_ticks: int
+    downstream_delay_minutes: int
+    parts_freight_cost: float
+    solver_status: SolverStatusEnum = SolverStatusEnum.FEASIBLE
+    pass1_status: Optional[SolverStatusEnum] = None
+    pass2_status: Optional[SolverStatusEnum] = None
+    best_bound: Optional[float] = None
+    solve_time_ms: float = 0.0
+    feasibility_explanations: List[str] = Field(default_factory=list)
+    rejected_options: List[RejectedOption] = Field(default_factory=list)
+    scheduled_intervals: List[ScheduledInterval] = Field(default_factory=list)
+    approval_status: ApprovalStatus = ApprovalStatus.PENDING_APPROVAL
+    verification_result: Optional[Dict[str, Any]] = None
+
+
+def a2_plus_to_verifier_view(decision: A2PlusDecision) -> A2PlusVerifierView:
+    """
+    Creates a dedicated verifier-input projection (A2PlusVerifierView) from a feasible A2PlusDecision.
+    Preserves policy_id='A2_PLUS' in the decision digest and invariant checks without
+    modifying the legacy PolicyId enum or the production Proposal model.
+
+    Raises:
+        ValueError: If the decision is infeasible (is_feasible is False or status is INFEASIBLE),
+                    preventing fabrication of artificial milestone/lateness values.
+    """
+    if not decision.is_feasible or decision.status == "INFEASIBLE":
+        raise ValueError(
+            f"Cannot project infeasible A2PlusDecision '{decision.decision_id}' into a verifier view. "
+            "Infeasible decisions have unpopulated milestones (None) and must not be fabricated."
         )
 
-    return Proposal(
+    if (
+        decision.b4_release_tick is None
+        or decision.ro1051_finish_tick is None
+        or decision.ro1042_finish_tick is None
+        or decision.weighted_lateness is None
+        or decision.freight_cost is None
+    ):
+        raise ValueError(
+            f"Cannot project A2PlusDecision '{decision.decision_id}' with missing critical milestone values."
+        )
+
+    return A2PlusVerifierView(
         proposal_id=f"PROP-{decision.decision_id}",
         run_id=f"RUN-{decision.decision_id}",
         scenario_id=decision.scenario_id,
-        policy_id=PolicyId.A2,  # Schema compliance for adapter
+        policy_id="A2_PLUS",
         input_snapshot_version=decision.snapshot_version,
         selected_source_id=decision.selected_source_id,
         selected_source_name=decision.selected_source_name,
         selected_movement=decision.selected_movement,
-        b4_release_tick=decision.b4_release_tick if decision.b4_release_tick is not None else 0,
-        b4_release_clock=decision.b4_release_clock if decision.b4_release_clock is not None else "08:00",
-        ro1051_finish_tick=decision.ro1051_finish_tick if decision.ro1051_finish_tick is not None else 0,
-        ro1051_finish_clock=decision.ro1051_finish_clock if decision.ro1051_finish_clock is not None else "08:00",
-        ro1042_finish_tick=decision.ro1042_finish_tick if decision.ro1042_finish_tick is not None else 0,
-        ro1042_finish_clock=decision.ro1042_finish_clock if decision.ro1042_finish_clock is not None else "08:00",
-        weighted_lateness_ticks=decision.weighted_lateness if decision.weighted_lateness is not None else 0.0,
-        ro1042_lateness_ticks=decision.ro1042_lateness_ticks if decision.ro1042_lateness_ticks is not None else 0,
-        ro1051_lateness_ticks=decision.ro1051_lateness_ticks if decision.ro1051_lateness_ticks is not None else 0,
-        downstream_delay_minutes=decision.downstream_delay_minutes if decision.downstream_delay_minutes is not None else 0,
-        parts_freight_cost=decision.freight_cost if decision.freight_cost is not None else 0.0,
+        b4_release_tick=decision.b4_release_tick,
+        b4_release_clock=decision.b4_release_clock or "08:00",
+        ro1051_finish_tick=decision.ro1051_finish_tick,
+        ro1051_finish_clock=decision.ro1051_finish_clock or "08:00",
+        ro1042_finish_tick=decision.ro1042_finish_tick,
+        ro1042_finish_clock=decision.ro1042_finish_clock or "08:00",
+        weighted_lateness_ticks=decision.weighted_lateness,
+        ro1042_lateness_ticks=decision.ro1042_lateness_ticks or 0,
+        ro1051_lateness_ticks=decision.ro1051_lateness_ticks or 0,
+        downstream_delay_minutes=decision.downstream_delay_minutes or 0,
+        parts_freight_cost=decision.freight_cost,
         solver_status=SolverStatusEnum.FEASIBLE,
         solve_time_ms=decision.solve_time_ms,
         feasibility_explanations=decision.selection_explanations,
@@ -651,3 +680,7 @@ def a2_plus_to_proposal_adapter(decision: A2PlusDecision) -> Proposal:
         scheduled_intervals=decision.scheduled_intervals,
         approval_status=ApprovalStatus.PENDING_APPROVAL
     )
+
+
+# Backwards-compatibility alias for research/verifier test imports
+a2_plus_to_proposal_adapter = a2_plus_to_verifier_view

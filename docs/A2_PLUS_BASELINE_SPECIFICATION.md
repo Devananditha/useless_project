@@ -174,6 +174,7 @@ While A2+ is an effective single-step heuristic, it has fundamental algorithmic 
 - Primary implementation lives in `backend/v2/baseline_a2_plus.py`.
 - No dependencies on OR-Tools or CP-SAT.
 - Status is clearly labeled as `HEURISTIC` rather than `OPTIMAL`.
-- Verified via pure-Python adapter `a2_plus_to_proposal_adapter` against `backend/verifier.py` (all 8 invariant checks pass).
+- **Verifier Identity Preservation:** Verified via a dedicated verifier projection `A2PlusVerifierView` (and `a2_plus_to_verifier_view` / `a2_plus_to_proposal_adapter`). It preserves `policy_id = "A2_PLUS"` without altering the production `PolicyId` enum or the `Proposal` model. The resulting SHA-256 decision digest cryptographically reflects the `"A2_PLUS"` policy identity.
+- **Fail-Closed on Infeasibility:** Infeasible `A2PlusDecision` objects preserve unpopulated milestones (`None`). `a2_plus_to_verifier_view()` strictly raises `ValueError` if invoked on an infeasible decision, rejecting the fabrication of synthetic milestone or lateness values (e.g. 0 or 999).
 - Isolated from the production advisor approval/commit pipeline (`backend/revalidation.py`).
 - Synthetic and benchmark results reflect modeled mathematical fixtures and do not claim real dealership field performance.
