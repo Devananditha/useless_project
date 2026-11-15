@@ -50,6 +50,7 @@ class VerificationResult(BaseModel):
     certificate_id: str = Field(..., description="Unique certificate identifier, e.g. CERT-...")
     violations: List[VerificationViolation] = Field(default_factory=list)
     checked_invariants: List[str] = Field(default_factory=list)
+    skipped_checks: List[str] = Field(default_factory=list)
     verification_summary: str
     timestamp: str = Field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
 
@@ -112,6 +113,7 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
     """
     violations: List[VerificationViolation] = []
     checked_invariants: List[str] = []
+    skipped_checks: List[str] = []
     digest = compute_proposal_digest(proposal)
     cert_id = f"CERT-{uuid.uuid4().hex[:8].upper()}"
 
@@ -153,13 +155,14 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             certificate_id=cert_id,
             violations=violations,
             checked_invariants=checked_invariants,
+            skipped_checks=skipped_checks,
             verification_summary=f"REJECTED: Solver reported non-feasible status '{proposal.solver_status.value}'."
         )
 
     # -------------------------------------------------------------------------
-    # Invariant 3: Critical Evidence Completeness Check
+    # Invariant 3: Critical & Mandatory Evidence Completeness
     # -------------------------------------------------------------------------
-    inv_name = "INV-EVIDENCE-COMPLETE: Critical Proposal Fields Present"
+    inv_name = "INV-EVIDENCE-COMPLETE: Critical & Mandatory Schedule Events Present"
     checked_invariants.append(inv_name)
     if not proposal.selected_source_id or not proposal.scheduled_intervals:
         violations.append(VerificationViolation(
@@ -176,7 +179,153 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             certificate_id=cert_id,
             violations=violations,
             checked_invariants=checked_invariants,
-            verification_summary="Verification aborted: critical evidence missing from proposal payload."
+            skipped_checks=skipped_checks,
+            verification_summary="INSUFFICIENT_EVIDENCE: Critical proposal evidence missing."
+        )
+
+    # Semantic classification of emitted schedule intervals
+    ro1042_install = [
+        iv for iv in proposal.scheduled_intervals
+        if iv.entity_id == "RO-1042" and iv.entity_type == "JOB" and (
+            "Part Installation" in iv.operation or "Install" in iv.operation or "Installation" in iv.operation
+        )
+    ]
+    ro1042_clearance = [
+        iv for iv in proposal.scheduled_intervals
+        if iv.entity_id == "RO-1042" and ("Clearance" in iv.operation or "clearance" in iv.operation.lower())
+    ]
+    ro1051_service = [
+        iv for iv in proposal.scheduled_intervals
+        if iv.entity_id == "RO-1051" and iv.entity_type == "JOB" and "Clearance" not in iv.operation
+    ]
+    outbound_transit = [
+        iv for iv in proposal.scheduled_intervals
+        if iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and (
+            "Holding H2" in iv.operation or "to Holding H2" in iv.operation or "Transit from Bay B4" in iv.operation
+        )
+    ]
+    h2_holding = [
+        iv for iv in proposal.scheduled_intervals
+        if iv.entity_id == "H2" and iv.entity_type == "HOLDING"
+    ]
+    ro1051_clearance = [
+        iv for iv in proposal.scheduled_intervals
+        if ("Clearance" in iv.operation and ("RO-1051" in iv.operation or iv.entity_id == "B4"))
+    ]
+    return_transit = [
+        iv for iv in proposal.scheduled_intervals
+        if iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and (
+            "Return" in iv.operation or "H2 to Bay B4" in iv.operation
+        )
+    ]
+
+    # Explicit mandatory event presence checks per movement mode
+    if proposal.selected_movement == "HOLD_ON_BAY":
+        if not ro1042_install:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RO1042_INSTALL_INTERVAL",
+                description="Required RO-1042 part installation interval is missing from proposal schedule.",
+                entity_id="RO-1042"
+            ))
+        if not ro1042_clearance:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RO1042_CLEARANCE_INTERVAL",
+                description="Required RO-1042 bay clearance interval is missing from proposal schedule.",
+                entity_id="RO-1042"
+            ))
+        if not ro1051_service:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RO1051_SERVICE_INTERVAL",
+                description="Required RO-1051 service interval is missing from proposal schedule.",
+                entity_id="RO-1051"
+            ))
+    elif proposal.selected_movement == "RELOCATE_TO_H2":
+        # Always check physical safety for relocation attempts regardless of intervals present
+        ro = snapshot.ro1042
+        if not ro.is_rollable or ro.current_vehicle_state == VehicleState.PARTIALLY_DISMANTLED:
+            violations.append(VerificationViolation(
+                violation_code="UNSAFE_RELOCATION_UNROLLABLE",
+                description=(
+                    f"Proposal relocated RO-1042, but vehicle is in state '{ro.current_vehicle_state.value}' "
+                    f"with is_rollable={ro.is_rollable}. Physical movement violates safety Invariant CE-1."
+                ),
+                entity_id="RO-1042"
+            ))
+        if not ro.technician_signoff_recorded:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_TECHNICIAN_SIGNOFF",
+                description="Relocation selected without recorded certified technician safety signoff.",
+                entity_id="RO-1042"
+            ))
+        if snapshot.h2_available_stalls < 1:
+            violations.append(VerificationViolation(
+                violation_code="HOLDING_CAPACITY_EXCEEDED",
+                description=f"Relocation scheduled to H2, but available holding stalls is {snapshot.h2_available_stalls}.",
+                entity_id="H2"
+            ))
+
+        if not outbound_transit:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_OUTBOUND_TRANSIT_INTERVAL",
+                description="Required outbound relocation transit interval to H2 is missing from proposal schedule.",
+                entity_id="RO-1042"
+            ))
+        if not h2_holding:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_H2_HOLDING_INTERVAL",
+                description="Required H2 holding staging interval is missing from proposal schedule.",
+                entity_id="H2"
+            ))
+        if not ro1051_service:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RO1051_SERVICE_INTERVAL",
+                description="Required RO-1051 fleet service interval is missing from proposal schedule.",
+                entity_id="RO-1051"
+            ))
+        if not ro1051_clearance:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RO1051_CLEARANCE_INTERVAL",
+                description="Required RO-1051 post-service clearance interval is missing from proposal schedule.",
+                entity_id="B4"
+            ))
+        if not return_transit:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RETURN_TRANSIT_INTERVAL",
+                description="Required return transit interval from H2 to Bay B4 is missing from proposal schedule.",
+                entity_id="RO-1042"
+            ))
+        if not ro1042_install:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_RO1042_INSTALL_INTERVAL",
+                description="Required RO-1042 installation interval upon return is missing from proposal schedule.",
+                entity_id="RO-1042"
+            ))
+        if not ro1042_clearance:
+            violations.append(VerificationViolation(
+                violation_code="MISSING_FINAL_CLEARANCE_INTERVAL",
+                description="Required final RO-1042 clearance interval is missing from proposal schedule.",
+                entity_id="RO-1042"
+            ))
+
+    # Fail closed on missing mandatory schedule evidence if no other physical safety violation occurred
+    missing_codes = [v.violation_code for v in violations if v.violation_code.startswith("MISSING_")]
+    has_rejection_fault = any(
+        not v.violation_code.startswith("MISSING_") for v in violations
+    )
+    if missing_codes:
+        final_status = VerificationStatus.REJECTED if has_rejection_fault else VerificationStatus.INSUFFICIENT_EVIDENCE
+        summary_prefix = "REJECTED" if has_rejection_fault else "INSUFFICIENT_EVIDENCE"
+        return VerificationResult(
+            verification_status=final_status,
+            proposal_id=proposal.proposal_id,
+            scenario_id=snapshot.scenario_id,
+            snapshot_version=snapshot.snapshot_version,
+            proposal_digest=digest,
+            certificate_id=cert_id,
+            violations=violations,
+            checked_invariants=checked_invariants,
+            skipped_checks=skipped_checks,
+            verification_summary=f"{summary_prefix}: Proposal failed validation (missing schedule evidence: {missing_codes})."
         )
 
     # -------------------------------------------------------------------------
@@ -194,7 +343,6 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
         selected_source = None
     else:
         selected_source = matching_sources[0]
-        # Check negative quantity
         if selected_source.atp < 0:
             violations.append(VerificationViolation(
                 violation_code="NEGATIVE_INVENTORY",
@@ -227,33 +375,128 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             ))
 
     # -------------------------------------------------------------------------
-    # Invariant 5: Temporal Readiness - Installation Cannot Precede Usable Ready Time
+    # Invariant 5 & 6: Movement Sequence & Chronological Reconstruction
     # -------------------------------------------------------------------------
-    inv_name = "INV-TIME-READY: Part Installation Starts At Or After Usable Ready Tick"
-    checked_invariants.append(inv_name)
-    # Reconstruct RO-1042 install start from scheduled intervals
-    ro1042_install_intervals = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_id == "RO-1042" and ("Installation" in iv.operation or "Part" in iv.operation or "Install" in iv.operation)
-    ]
-    if ro1042_install_intervals and selected_source:
-        actual_install_start = ro1042_install_intervals[0].start_tick
-        if actual_install_start < selected_source.usable_time_ticks:
+    recon_ro1042_finish: int = proposal.ro1042_finish_tick
+    recon_ro1051_finish: int = proposal.ro1051_finish_tick
+
+    if proposal.selected_movement == "HOLD_ON_BAY":
+        checked_invariants.append("INV-TIME-READY: Part Arrival Respects Usable Ready Tick")
+        checked_invariants.append("INV-BAY-OCCUPANCY: Bay B4 Mutual Exclusion & Clearance")
+        checked_invariants.append("INV-SCHEDULE-CHRONOLOGY: Ordered Non-Overlapping Operations")
+        checked_invariants.append("INV-MILESTONE-RECONSTRUCTION: Completion Milestones Reconstructed")
+        skipped_checks.append("INV-RELOC-TIMELINE: Not applicable in HOLD_ON_BAY movement mode")
+
+        inst = ro1042_install[0]
+        clr = ro1042_clearance[0]
+        srv = ro1051_service[0]
+
+        # 1. Part readiness
+        if selected_source and inst.start_tick < selected_source.usable_time_ticks:
             violations.append(VerificationViolation(
                 violation_code="INSTALL_BEFORE_PART_READY",
                 description=(
-                    f"RO-1042 installation scheduled to start at tick {actual_install_start}, "
+                    f"RO-1042 installation scheduled to start at tick {inst.start_tick}, "
                     f"prior to source '{selected_source.source_id}' usable-ready tick {selected_source.usable_time_ticks}."
                 ),
                 entity_id="RO-1042"
             ))
+        if inst.start_tick < snapshot.current_tick:
+            violations.append(VerificationViolation(
+                violation_code="EVENT_BEFORE_CURRENT_TIME",
+                description=f"RO-1042 installation scheduled at tick {inst.start_tick}, before snapshot current tick {snapshot.current_tick}.",
+                entity_id="RO-1042"
+            ))
 
-    # -------------------------------------------------------------------------
-    # Invariant 6: Physical Vehicle Safety & Relocation Gating
-    # -------------------------------------------------------------------------
-    inv_name = "INV-SAFE-RELOC: Vehicle Mobility & Certified Signoff for Relocation"
-    checked_invariants.append(inv_name)
-    if proposal.selected_movement == "RELOCATE_TO_H2":
+        # 2. Installation duration
+        dur_inst = inst.end_tick - inst.start_tick
+        if dur_inst != snapshot.ro1042.service_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="INSTALL_DURATION_MISMATCH",
+                description=f"RO-1042 installation duration ({dur_inst} ticks) != requirement ({snapshot.ro1042.service_duration_ticks} ticks).",
+                entity_id="RO-1042"
+            ))
+
+        # 3. Clearance continuity
+        if clr.start_tick != inst.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_DISCONTINUITY",
+                description=f"RO-1042 clearance start (tick {clr.start_tick}) does not match installation finish (tick {inst.end_tick}).",
+                entity_id="RO-1042"
+            ))
+
+        # 4. Clearance duration
+        dur_clr = clr.end_tick - clr.start_tick
+        if dur_clr < snapshot.clearance_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_SHORTENED",
+                description=f"Bay clearance duration ({dur_clr} ticks) < facility requirement ({snapshot.clearance_duration_ticks} ticks).",
+                entity_id="B4"
+            ))
+
+        # 5. RO-1042 finish tick reconstruction
+        recon_ro1042_finish = clr.end_tick
+        if proposal.ro1042_finish_tick != recon_ro1042_finish:
+            violations.append(VerificationViolation(
+                violation_code="RO1042_FINISH_MISMATCH",
+                description=f"Proposal reports RO-1042 finish at tick {proposal.ro1042_finish_tick}, but reconstructed clearance ends at tick {recon_ro1042_finish}.",
+                entity_id="RO-1042"
+            ))
+
+        # 6. Bay B4 first release reconstruction
+        recon_b4_release = clr.end_tick
+        if proposal.b4_release_tick != recon_b4_release:
+            violations.append(VerificationViolation(
+                violation_code="B4_RELEASE_MISMATCH",
+                description=f"Proposal reports Bay B4 release at tick {proposal.b4_release_tick}, but physical clearance ends at tick {recon_b4_release}.",
+                entity_id="B4"
+            ))
+
+        # 7. RO-1051 start precedence
+        if srv.start_tick < recon_b4_release:
+            violations.append(VerificationViolation(
+                violation_code="BAY_OCCUPANCY_OVERLAP",
+                description=(
+                    f"RO-1051 starts at tick {srv.start_tick} on Bay B4 before RO-1042 clears the hoist at tick {recon_b4_release}."
+                ),
+                entity_id="B4"
+            ))
+
+        # 8. RO-1051 service duration
+        dur_srv = srv.end_tick - srv.start_tick
+        if dur_srv != snapshot.ro1051.service_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="SERVICE_DURATION_MISMATCH",
+                description=f"RO-1051 service duration ({dur_srv} ticks) != requirement ({snapshot.ro1051.service_duration_ticks} ticks).",
+                entity_id="RO-1051"
+            ))
+
+        # 9. RO-1051 finish tick reconstruction
+        recon_ro1051_finish = srv.end_tick
+        if proposal.ro1051_finish_tick != recon_ro1051_finish:
+            violations.append(VerificationViolation(
+                violation_code="RO1051_FINISH_MISMATCH",
+                description=f"Proposal reports RO-1051 finish at tick {proposal.ro1051_finish_tick}, but reconstructed service ends at tick {recon_ro1051_finish}.",
+                entity_id="RO-1051"
+            ))
+
+        # 10. Technician constraint
+        tech_avail = snapshot.technician_k2_available_tick or snapshot.ro1051.technician_available_tick
+        if tech_avail is not None:
+            checked_invariants.append("INV-TECH-CONSTRAINTS: Technician K2 Availability Constraint")
+            if srv.start_tick < tech_avail:
+                violations.append(VerificationViolation(
+                    violation_code="TECHNICIAN_OVERLAP",
+                    description=f"RO-1051 starts at tick {srv.start_tick}, violating Tech K2 availability at tick {tech_avail}.",
+                    entity_id="K2"
+                ))
+        else:
+            skipped_checks.append("INV-TECH-CONSTRAINTS: Unconstrained technician pool in active scenario")
+
+    elif proposal.selected_movement == "RELOCATE_TO_H2":
+        inv_name = "INV-SAFE-RELOC: Vehicle Mobility & Certified Signoff for Relocation"
+        checked_invariants.append(inv_name)
+
         ro = snapshot.ro1042
         if not ro.is_rollable or ro.current_vehicle_state == VehicleState.PARTIALLY_DISMANTLED:
             violations.append(VerificationViolation(
@@ -277,94 +520,211 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
                 entity_id="H2"
             ))
 
-    # -------------------------------------------------------------------------
-    # Invariant 7: Precedence, Bay Occupancy & Clearance Continuity
-    # -------------------------------------------------------------------------
-    inv_name = "INV-BAY-OCCUPANCY: Hoist Bay B4 Non-Overlapping Scheduling & Clearance"
-    checked_invariants.append(inv_name)
-    # Collect all intervals utilizing Bay B4
-    bay_intervals = sorted(
-        [iv for iv in proposal.scheduled_intervals if iv.entity_type in ("BAY", "JOB") and (iv.entity_id == "B4" or "Bay B4" in iv.operation or iv.entity_id in ("RO-1042", "RO-1051"))],
-        key=lambda x: (x.start_tick, x.end_tick)
-    )
-    # Filter strictly to intervals occupying Bay B4 physically
-    # In HOLD_ON_BAY: RO-1042 install -> RO-1042 clear -> RO-1051
-    # Check that clearance exists and is not omitted
-    clearance_intervals = [
-        iv for iv in proposal.scheduled_intervals
-        if "Clearance" in iv.operation or "clearance" in iv.operation.lower()
-    ]
-    if not clearance_intervals:
-        violations.append(VerificationViolation(
-            violation_code="CLEARANCE_OMITTED",
-            description="Required post-service bay clearance interval was completely omitted from proposal schedule.",
-            entity_id="B4"
-        ))
-    else:
-        for civ in clearance_intervals:
-            dur = civ.end_tick - civ.start_tick
-            if dur < snapshot.clearance_duration_ticks:
-                violations.append(VerificationViolation(
-                    violation_code="CLEARANCE_SHORTENED",
-                    description=f"Bay clearance duration ({dur} ticks) is less than facility requirement ({snapshot.clearance_duration_ticks} ticks).",
-                    entity_id="B4"
-                ))
+        checked_invariants.append("INV-RELOC-TIMELINE: Full Outbound, Staging, Return & Reassembly Sequence")
+        checked_invariants.append("INV-TIME-READY: Part Arrival Respects Usable Ready Tick")
+        checked_invariants.append("INV-BAY-OCCUPANCY: Bay B4 Mutual Exclusion & Clearance")
+        checked_invariants.append("INV-SCHEDULE-CHRONOLOGY: Ordered Non-Overlapping Operations")
+        checked_invariants.append("INV-MILESTONE-RECONSTRUCTION: Completion Milestones Reconstructed")
 
-    # Check pairwise non-overlap of active jobs on Bay B4
-    active_job_intervals = [
-        iv for iv in proposal.scheduled_intervals
-        if iv.entity_type == "JOB" and iv.entity_id in ("RO-1042", "RO-1051") and "Clearance" not in iv.operation
-    ]
-    active_job_intervals.sort(key=lambda x: x.start_tick)
-    for i in range(len(active_job_intervals) - 1):
-        first = active_job_intervals[i]
-        second = active_job_intervals[i + 1]
-        # In HOLD_ON_BAY, between RO-1042 install and RO-1051, there must be clearance duration
-        if proposal.selected_movement == "HOLD_ON_BAY":
-            if second.start_tick < first.end_tick + snapshot.clearance_duration_ticks:
-                violations.append(VerificationViolation(
-                    violation_code="BAY_OCCUPANCY_OVERLAP",
-                    description=(
-                        f"Bay B4 active jobs overlap or lack mandatory clearance: "
-                        f"{first.entity_id} ({first.start_tick}->{first.end_tick}) and "
-                        f"{second.entity_id} ({second.start_tick}->{second.end_tick})."
-                    ),
-                    entity_id="B4"
-                ))
+        out = outbound_transit[0]
+        srv = ro1051_service[0]
+        srv_clr = ro1051_clearance[0]
+        hold = h2_holding[0]
+        ret = return_transit[0]
+        inst = ro1042_install[0]
+        clr = ro1042_clearance[0]
 
-    # -------------------------------------------------------------------------
-    # Invariant 8: Resource / Technician Overlap
-    # -------------------------------------------------------------------------
-    inv_name = "INV-TECH-OVERLAP: No Overlapping Assignments on Constrained Technicians"
-    checked_invariants.append(inv_name)
-    # Check technician K2 availability constraint if present
-    tech_k2_busy_until = snapshot.technician_k2_available_tick
-    if tech_k2_busy_until is not None:
-        ro1051_intervals = [iv for iv in proposal.scheduled_intervals if iv.entity_id == "RO-1051" and iv.entity_type == "JOB"]
-        if ro1051_intervals:
-            ro1051_start = ro1051_intervals[0].start_tick
-            if ro1051_start < tech_k2_busy_until:
+        # 1. Outbound transit start & duration
+        if out.start_tick < snapshot.current_tick:
+            violations.append(VerificationViolation(
+                violation_code="EVENT_BEFORE_CURRENT_TIME",
+                description=f"Outbound transit scheduled at tick {out.start_tick}, before snapshot current tick {snapshot.current_tick}.",
+                entity_id="RO-1042"
+            ))
+        dur_out = out.end_tick - out.start_tick
+        if dur_out < snapshot.relocation_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="RELOCATION_TRANSIT_SHORTENED",
+                description=f"Outbound relocation transit duration ({dur_out} ticks) < facility requirement ({snapshot.relocation_duration_ticks} ticks).",
+                entity_id="RO-1042"
+            ))
+        elif dur_out != snapshot.relocation_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="RELOCATION_TRANSIT_DURATION_MISMATCH",
+                description=f"Outbound relocation duration ({dur_out} ticks) != requirement ({snapshot.relocation_duration_ticks} ticks).",
+                entity_id="RO-1042"
+            ))
+
+        # 2. Reconstructed Bay B4 first release
+        recon_b4_release = out.end_tick
+        if proposal.b4_release_tick != recon_b4_release:
+            violations.append(VerificationViolation(
+                violation_code="B4_RELEASE_MISMATCH",
+                description=f"Proposal reports Bay B4 release at tick {proposal.b4_release_tick}, but physical outbound transit ends at tick {recon_b4_release}.",
+                entity_id="B4"
+            ))
+
+        # 3. RO-1051 start on Bay B4
+        if srv.start_tick < out.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="BAY_OCCUPANCY_OVERLAP",
+                description=(
+                    f"RO-1051 starts at tick {srv.start_tick} on Bay B4 before RO-1042 clears the bay at tick {out.end_tick}."
+                ),
+                entity_id="B4"
+            ))
+
+        # Technician check
+        tech_avail = snapshot.technician_k2_available_tick or snapshot.ro1051.technician_available_tick
+        if tech_avail is not None:
+            checked_invariants.append("INV-TECH-CONSTRAINTS: Technician K2 Availability Constraint")
+            if srv.start_tick < tech_avail:
                 violations.append(VerificationViolation(
                     violation_code="TECHNICIAN_OVERLAP",
-                    description=(
-                        f"RO-1051 assigned to Tech K2 starts at tick {ro1051_start}, "
-                        f"violating Tech K2 preceding commitment busy until tick {tech_k2_busy_until}."
-                    ),
+                    description=f"RO-1051 starts at tick {srv.start_tick}, violating Tech K2 availability at tick {tech_avail}.",
                     entity_id="K2"
                 ))
+        else:
+            skipped_checks.append("INV-TECH-CONSTRAINTS: Unconstrained technician pool in active scenario")
+
+        # 4. RO-1051 duration & finish reconstruction
+        dur_srv = srv.end_tick - srv.start_tick
+        if dur_srv != snapshot.ro1051.service_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="SERVICE_DURATION_MISMATCH",
+                description=f"RO-1051 service duration ({dur_srv} ticks) != requirement ({snapshot.ro1051.service_duration_ticks} ticks).",
+                entity_id="RO-1051"
+            ))
+        recon_ro1051_finish = srv.end_tick
+        if proposal.ro1051_finish_tick != recon_ro1051_finish:
+            violations.append(VerificationViolation(
+                violation_code="RO1051_FINISH_MISMATCH",
+                description=f"Proposal reports RO-1051 finish at tick {proposal.ro1051_finish_tick}, but reconstructed service ends at tick {recon_ro1051_finish}.",
+                entity_id="RO-1051"
+            ))
+
+        # 5. RO-1051 clearance continuity & duration
+        if srv_clr.start_tick != srv.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_DISCONTINUITY",
+                description=f"RO-1051 clearance start (tick {srv_clr.start_tick}) does not match service end (tick {srv.end_tick}).",
+                entity_id="B4"
+            ))
+        dur_srv_clr = srv_clr.end_tick - srv_clr.start_tick
+        if dur_srv_clr < snapshot.clearance_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_SHORTENED",
+                description=f"RO-1051 post-service clearance duration ({dur_srv_clr} ticks) < facility requirement ({snapshot.clearance_duration_ticks} ticks).",
+                entity_id="B4"
+            ))
+        b4_free_after_1051 = srv_clr.end_tick
+
+        # 6. Holding stage continuity
+        if hold.start_tick != out.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="HOLDING_CHRONOLOGY_INVALID",
+                description=f"H2 holding start (tick {hold.start_tick}) does not match outbound transit arrival (tick {out.end_tick}).",
+                entity_id="H2"
+            ))
+        if hold.end_tick != ret.start_tick:
+            violations.append(VerificationViolation(
+                violation_code="HOLDING_CHRONOLOGY_INVALID",
+                description=f"H2 holding end (tick {hold.end_tick}) does not match return transit departure (tick {ret.start_tick}).",
+                entity_id="H2"
+            ))
+
+        # 7. Return transit start precedence
+        if ret.start_tick < b4_free_after_1051:
+            violations.append(VerificationViolation(
+                violation_code="RETURN_BEFORE_BAY_AVAILABLE",
+                description=(
+                    f"Return transit begins at tick {ret.start_tick} before Bay B4 is cleared by RO-1051 at tick {b4_free_after_1051}."
+                ),
+                entity_id="RO-1042"
+            ))
+
+        # 8. Return transit duration
+        dur_ret = ret.end_tick - ret.start_tick
+        if dur_ret < snapshot.relocation_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="RELOCATION_TRANSIT_SHORTENED",
+                description=f"Return transit duration ({dur_ret} ticks) < facility requirement ({snapshot.relocation_duration_ticks} ticks).",
+                entity_id="RO-1042"
+            ))
+        elif dur_ret != snapshot.relocation_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="RELOCATION_TRANSIT_DURATION_MISMATCH",
+                description=f"Return transit duration ({dur_ret} ticks) != requirement ({snapshot.relocation_duration_ticks} ticks).",
+                entity_id="RO-1042"
+            ))
+
+        # 9. RO-1042 installation after return
+        if inst.start_tick < ret.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="INSTALL_BEFORE_VEHICLE_RETURN",
+                description=f"RO-1042 installation starts at tick {inst.start_tick} before vehicle return transit arrival at tick {ret.end_tick}.",
+                entity_id="RO-1042"
+            ))
+        elif inst.start_tick != ret.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_DISCONTINUITY",
+                description=f"RO-1042 installation start (tick {inst.start_tick}) does not match vehicle return arrival (tick {ret.end_tick}).",
+                entity_id="RO-1042"
+            ))
+        if selected_source and inst.start_tick < selected_source.usable_time_ticks:
+            violations.append(VerificationViolation(
+                violation_code="INSTALL_BEFORE_PART_READY",
+                description=(
+                    f"RO-1042 installation scheduled to start at tick {inst.start_tick}, "
+                    f"prior to source '{selected_source.source_id}' usable-ready tick {selected_source.usable_time_ticks}."
+                ),
+                entity_id="RO-1042"
+            ))
+        dur_inst = inst.end_tick - inst.start_tick
+        if dur_inst != snapshot.ro1042.service_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="INSTALL_DURATION_MISMATCH",
+                description=f"RO-1042 installation duration ({dur_inst} ticks) != requirement ({snapshot.ro1042.service_duration_ticks} ticks).",
+                entity_id="RO-1042"
+            ))
+
+        # 10. Final clearance continuity & duration
+        if clr.start_tick != inst.end_tick:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_DISCONTINUITY",
+                description=f"Final clearance start (tick {clr.start_tick}) does not match installation finish (tick {inst.end_tick}).",
+                entity_id="RO-1042"
+            ))
+        dur_clr = clr.end_tick - clr.start_tick
+        if dur_clr < snapshot.clearance_duration_ticks:
+            violations.append(VerificationViolation(
+                violation_code="CLEARANCE_SHORTENED",
+                description=f"Final bay clearance duration ({dur_clr} ticks) < facility requirement ({snapshot.clearance_duration_ticks} ticks).",
+                entity_id="B4"
+            ))
+
+        # Reconstructed RO-1042 finish
+        recon_ro1042_finish = clr.end_tick
+        if proposal.ro1042_finish_tick != recon_ro1042_finish:
+            violations.append(VerificationViolation(
+                violation_code="RO1042_FINISH_MISMATCH",
+                description=f"Proposal reports RO-1042 finish at tick {proposal.ro1042_finish_tick}, but reconstructed clearance ends at tick {recon_ro1042_finish}.",
+                entity_id="RO-1042"
+            ))
 
     # -------------------------------------------------------------------------
-    # Invariant 9: Customer Promise & Lateness Arithmetic Verification
+    # Invariant 7: Independent Lateness & Objective Function Calculation
     # -------------------------------------------------------------------------
-    inv_name = "INV-LATENESS-MATH: Independent Verification of Objective Functions"
+    inv_name = "INV-LATENESS-RECONSTRUCTION: Independent Objective Function Calculation"
     checked_invariants.append(inv_name)
+
     p_1042 = snapshot.ro1042.promise_ticks
     p_1051 = snapshot.ro1051.promise_ticks
     w_1042 = snapshot.ro1042.priority_weight
     w_1051 = snapshot.ro1051.priority_weight
 
-    expected_lateness_1042 = max(0, proposal.ro1042_finish_tick - p_1042)
-    expected_lateness_1051 = max(0, proposal.ro1051_finish_tick - p_1051)
+    expected_lateness_1042 = max(0, recon_ro1042_finish - p_1042)
+    expected_lateness_1051 = max(0, recon_ro1051_finish - p_1051)
     expected_weighted_lateness = float(w_1042 * expected_lateness_1042 + w_1051 * expected_lateness_1051)
 
     if proposal.ro1042_lateness_ticks != expected_lateness_1042:
@@ -372,7 +732,7 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             violation_code="LATENESS_ARITHMETIC_MISMATCH",
             description=(
                 f"RO-1042 lateness mismatch: proposal reports {proposal.ro1042_lateness_ticks} ticks, "
-                f"but finish tick {proposal.ro1042_finish_tick} - promise {p_1042} = {expected_lateness_1042} ticks."
+                f"but finish tick {recon_ro1042_finish} - promise {p_1042} = {expected_lateness_1042} ticks."
             ),
             entity_id="RO-1042"
         ))
@@ -382,7 +742,7 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
             violation_code="LATENESS_ARITHMETIC_MISMATCH",
             description=(
                 f"RO-1051 lateness mismatch: proposal reports {proposal.ro1051_lateness_ticks} ticks, "
-                f"but finish tick {proposal.ro1051_finish_tick} - promise {p_1051} = {expected_lateness_1051} ticks."
+                f"but finish tick {recon_ro1051_finish} - promise {p_1051} = {expected_lateness_1051} ticks."
             ),
             entity_id="RO-1051"
         ))
@@ -405,7 +765,7 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
         summary = f"REJECTED: Proposal failed {len(violations)} independent invariant check(s)."
     else:
         status = VerificationStatus.VERIFIED
-        summary = f"VERIFIED: Proposal successfully certified across all {len(checked_invariants)} independent physical and temporal invariants."
+        summary = f"VERIFIED: Proposal certified across {len(checked_invariants)} physical and temporal invariants."
 
     return VerificationResult(
         verification_status=status,
@@ -416,6 +776,7 @@ def verify_proposal(proposal: Proposal, snapshot: ScenarioSnapshot) -> Verificat
         certificate_id=cert_id,
         violations=violations,
         checked_invariants=checked_invariants,
+        skipped_checks=skipped_checks,
         verification_summary=summary
     )
 

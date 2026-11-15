@@ -320,18 +320,33 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
                 </span>
               </div>
               <div>
-                <strong style={{ color: 'var(--text-secondary)' }}>Invariants:</strong>{' '}
-                <span>
-                  {joint_p3.verification_result.checked_invariants?.length || 0} checked (
-                  {joint_p3.verification_result.checked_invariants?.join(', ')})
+                <strong style={{ color: 'var(--text-secondary)' }}>Verified Invariants:</strong>{' '}
+                <span style={{ color: 'var(--accent-emerald)', fontWeight: '600' }}>
+                  {joint_p3.verification_result.checked_invariants?.length || 0} passed
                 </span>
+                <ul style={{ paddingLeft: '16px', marginTop: '2px', marginBottom: '2px', fontSize: '10px', color: 'var(--text-secondary)' }}>
+                  {joint_p3.verification_result.checked_invariants?.map((inv, i) => (
+                    <li key={i}>✓ {inv}</li>
+                  ))}
+                </ul>
               </div>
-              <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', fontStyle: 'italic' }}>
-                Prototype integrity notice: SHA-256 decision digest validates payload consistency in-memory. Production deployment requires isolated certificate storage, cryptographic signing (HMAC/Ed25519), and transactional state.
-              </div>
+              {joint_p3.verification_result.skipped_checks && joint_p3.verification_result.skipped_checks.length > 0 && (
+                <div style={{ marginTop: '2px' }}>
+                  <strong style={{ color: 'var(--text-muted)' }}>Skipped / Unconstrained Checks:</strong>
+                  <ul style={{ paddingLeft: '16px', marginTop: '2px', marginBottom: '2px', fontSize: '10px', color: '#64748b' }}>
+                    {joint_p3.verification_result.skipped_checks.map((chk, i) => (
+                      <li key={i}>— {chk}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {joint_p3.verification_result.violations?.length > 0 && (
                 <div style={{ marginTop: '4px', color: 'var(--accent-rose)' }}>
-                  <strong>Violations ({joint_p3.verification_result.violations.length}):</strong>
+                  <strong>
+                    {joint_p3.verification_result.verification_status === 'INSUFFICIENT_EVIDENCE'
+                      ? `Missing Evidence / Gaps (${joint_p3.verification_result.violations.length}):`
+                      : `Violations (${joint_p3.verification_result.violations.length}):`}
+                  </strong>
                   <ul style={{ paddingLeft: '16px', marginTop: '2px' }}>
                     {joint_p3.verification_result.violations.map((v, i) => (
                       <li key={i}>
@@ -341,6 +356,9 @@ export const PolicyComparisonPanel: React.FC<Props> = ({ comparison, loading }) 
                   </ul>
                 </div>
               )}
+              <div style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', fontStyle: 'italic' }}>
+                Prototype integrity notice: SHA-256 decision digest validates payload consistency in-memory. Production deployment requires isolated certificate storage, cryptographic signing (HMAC/Ed25519), and transactional state.
+              </div>
             </div>
           </div>
         )}

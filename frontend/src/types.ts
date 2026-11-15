@@ -35,6 +35,7 @@ export interface VerificationResult {
   verification_status: 'VERIFIED' | 'REJECTED' | 'INSUFFICIENT_EVIDENCE';
   proposal_digest: string;
   checked_invariants: string[];
+  skipped_checks?: string[];
   violations: VerificationViolation[];
   verification_summary: string;
 }

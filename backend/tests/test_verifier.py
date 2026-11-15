@@ -304,3 +304,228 @@ def test_insufficient_evidence_when_intervals_missing():
     res = verify_proposal(corrupt_prop, snap)
     assert res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE
     assert "MISSING_CRITICAL_EVIDENCE" in [v.violation_code for v in res.violations]
+
+
+# -----------------------------------------------------------------------------
+# 3. Stage 2.2 Sequence Reconstruction & Missing Evidence Mutations
+# -----------------------------------------------------------------------------
+
+def test_mutation_12_missing_ro1042_install_interval():
+    """Missing RO-1042 installation interval fails closed with INSUFFICIENT_EVIDENCE."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.scheduled_intervals = [
+        iv for iv in corrupt_prop.scheduled_intervals
+        if not (iv.entity_id == "RO-1042" and iv.entity_type == "JOB" and ("Installation" in iv.operation or "Install" in iv.operation))
+    ]
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE
+    assert "MISSING_RO1042_INSTALL_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_13_missing_ro1051_service_interval():
+    """Missing RO-1051 service interval fails closed with INSUFFICIENT_EVIDENCE."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.scheduled_intervals = [
+        iv for iv in corrupt_prop.scheduled_intervals
+        if not (iv.entity_id == "RO-1051" and iv.entity_type == "JOB")
+    ]
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE
+    assert "MISSING_RO1051_SERVICE_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_14_missing_outbound_relocation_interval():
+    """Missing outbound relocation transit fails closed with INSUFFICIENT_EVIDENCE."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.scheduled_intervals = [
+        iv for iv in corrupt_prop.scheduled_intervals
+        if not (iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and ("Holding H2" in iv.operation or "to Holding H2" in iv.operation))
+    ]
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE
+    assert "MISSING_OUTBOUND_TRANSIT_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_15_missing_return_transit_interval():
+    """Missing return transit interval fails closed with INSUFFICIENT_EVIDENCE."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.scheduled_intervals = [
+        iv for iv in corrupt_prop.scheduled_intervals
+        if not (iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and "Return" in iv.operation)
+    ]
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE
+    assert "MISSING_RETURN_TRANSIT_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_16_shortened_outbound_transit():
+    """Shortened outbound transit violates facility duration and is REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and ("Holding H2" in iv.operation or "to Holding H2" in iv.operation):
+            new_intervals.append(iv.model_copy(update={"start_tick": iv.start_tick, "end_tick": iv.start_tick + 1}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "RELOCATION_TRANSIT_SHORTENED" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_17_shortened_return_transit():
+    """Shortened return transit violates facility duration and is REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if iv.entity_id == "RO-1042" and iv.entity_type == "TRANSIT" and "Return" in iv.operation:
+            new_intervals.append(iv.model_copy(update={"start_tick": iv.start_tick, "end_tick": iv.start_tick + 1}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "RELOCATION_TRANSIT_SHORTENED" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_18_install_before_vehicle_return():
+    """RO-1042 installation scheduled before return arrival is REJECTED."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if iv.entity_id == "RO-1042" and ("Installation" in iv.operation or "Install" in iv.operation):
+            new_intervals.append(iv.model_copy(update={"start_tick": 35, "end_tick": 47}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "INSTALL_BEFORE_VEHICLE_RETURN" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_19_ro1051_starts_before_ro1042_clears():
+    """RO-1051 starting before RO-1042 clears Bay B4 is REJECTED for bay overlap."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if iv.entity_id == "RO-1051":
+            new_intervals.append(iv.model_copy(update={"start_tick": 30, "end_tick": 54}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "BAY_OCCUPANCY_OVERLAP" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_20_proposal_b4_release_tick_mismatch():
+    """Proposal reporting falsified b4_release_tick is REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.b4_release_tick = 10
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "B4_RELEASE_MISMATCH" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_21_proposal_ro1051_finish_tick_mismatch():
+    """Proposal reporting falsified ro1051_finish_tick is REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.ro1051_finish_tick = 50
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "RO1051_FINISH_MISMATCH" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_22_clearance_discontinuity():
+    """Discontinuity between installation end and clearance start is REJECTED."""
+    snap = get_canonical_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if iv.entity_id == "RO-1042" and "Clearance" in iv.operation:
+            new_intervals.append(iv.model_copy(update={"start_tick": 45, "end_tick": 47}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "CLEARANCE_DISCONTINUITY" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_23_missing_final_clearance_relocation():
+    """Missing final clearance interval in relocation scenario fails closed with INSUFFICIENT_EVIDENCE."""
+    snap = get_rollable_s_math_01_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    assert prop.selected_movement == "RELOCATE_TO_H2"
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    corrupt_prop.scheduled_intervals = [
+        iv for iv in corrupt_prop.scheduled_intervals
+        if not (iv.entity_id == "RO-1042" and "Clearance" in iv.operation)
+    ]
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE
+    assert "MISSING_FINAL_CLEARANCE_INTERVAL" in [v.violation_code for v in res.violations]
+
+
+def test_mutation_24_s_math_02_ro1051_before_tech_k2_available():
+    """RO-1051 scheduled before Tech K2 is available in S-MATH-02 is REJECTED."""
+    snap = get_s_math_02_fixture(version=14)
+    prop = solve_recovery_problem(snap, PolicyId.P3)
+    
+    corrupt_prop = prop.model_copy(deep=True)
+    new_intervals = []
+    for iv in corrupt_prop.scheduled_intervals:
+        if iv.entity_id == "RO-1051":
+            new_intervals.append(iv.model_copy(update={"start_tick": 45, "end_tick": 69}))
+        else:
+            new_intervals.append(iv)
+    corrupt_prop.scheduled_intervals = new_intervals
+    
+    res = verify_proposal(corrupt_prop, snap)
+    assert res.verification_status == VerificationStatus.REJECTED
+    assert "TECHNICIAN_OVERLAP" in [v.violation_code for v in res.violations]
